@@ -6,6 +6,8 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const http = require('http');
 const socketIo = require('socket.io');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -93,10 +95,10 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // MongoDB connection with enhanced debugging
 mongoose.connect(process.env.MONGO_URI)
   .then(async () => {
-    console.log('✅ MongoDB Connected Successfully');
-    console.log('📊 Database name:', mongoose.connection.db.databaseName);
-    console.log('🌐 Host:', mongoose.connection.host);
-    console.log('🔌 Port:', mongoose.connection.port);
+    console.log('MongoDB Connected Successfully');
+    console.log('Database name:', mongoose.connection.db.databaseName);
+    console.log('Host:', mongoose.connection.host);
+    console.log('Port:', mongoose.connection.port);
     
     // Test database operations only in development
     if (process.env.NODE_ENV !== 'production') {
@@ -104,31 +106,31 @@ mongoose.connect(process.env.MONGO_URI)
     }
   })
   .catch(err => {
-    console.error('❌ MongoDB connection error:', err);
+    console.error('MongoDB connection error:', err);
     process.exit(1);
   });
 
 // Database event listeners
 mongoose.connection.on('connected', () => {
-  console.log('✅ Mongoose connected to MongoDB');
+  console.log('Mongoose connected to MongoDB');
 });
 
 mongoose.connection.on('error', (err) => {
-  console.error('❌ Mongoose connection error:', err);
+  console.error('Mongoose connection error:', err);
 });
 
 mongoose.connection.on('disconnected', () => {
-  console.log('⚠️ Mongoose disconnected from MongoDB');
+  console.log('Mongoose disconnected from MongoDB');
 });
 
 mongoose.connection.on('reconnected', () => {
-  console.log('🔄 Mongoose reconnected to MongoDB');
+  console.log('Mongoose reconnected to MongoDB');
 });
 
 // Test database operations function (only for development)
 const testDatabaseOperations = async () => {
   try {
-    console.log('🧪 Testing database operations...');
+    console.log('Testing database operations...');
     
     // Import models - adjust paths as needed
     const Payment = require('./models/Payment');
@@ -140,29 +142,29 @@ const testDatabaseOperations = async () => {
     const orderCount = await Order.countDocuments();
     const userCount = await User.countDocuments();
     
-    console.log('📋 Current database counts:');
+    console.log('Current database counts:');
     console.log('   Payments:', paymentCount);
     console.log('   Orders:', orderCount);
     console.log('   Users:', userCount);
     
-    console.log('✅ Database operations test completed successfully');
+    console.log('Database operations test completed successfully');
     
   } catch (error) {
-    console.error('💥 Database test failed:', error);
+    console.error('Database test failed:', error);
     console.error('   Error details:', error.message);
     console.error('   This might indicate issues with your models or database permissions');
   }
 };
 
 // Import models to register them with mongoose - CRITICAL FOR MODEL ACCESS
-console.log('📦 Loading models...');
+console.log('Loading models...');
 require('./models/User');
 require('./models/Restaurant');
 require('./models/MenuItem');
 require('./models/Driver');
 require('./models/Order');
 require('./models/Payment');
-console.log('✅ Models loaded:', Object.keys(mongoose.models));
+console.log('Models loaded:', Object.keys(mongoose.models));
 
 // Load and register routes
 const authRoutes = require('./routes/auth');
@@ -181,8 +183,65 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/vendors', vendorRoutes);
 app.use('/api/drivers', driverRoutes);
 
+// Serve static files with better error handling
+const uploadsPath = path.join(__dirname, 'uploads');
+console.log('Uploads path:', uploadsPath);
+console.log('Uploads folder exists:', fs.existsSync(uploadsPath));
+
 // Serve static files
-app.use('/uploads', express.static('uploads'));
+app.use('/uploads', express.static(uploadsPath, {
+  setHeaders: (res, path) => {
+    // Set proper headers for images
+    if (path.endsWith('.png') || path.endsWith('.jpg') || path.endsWith('.jpeg')) {
+      res.setHeader('Content-Type', path.endsWith('.png') ? 'image/png' : 'image/jpeg');
+    }
+  }
+}));
+
+// Debug endpoint to check file structure
+app.get('/api/debug/files', (req, res) => {
+  try {
+    const uploadsExists = fs.existsSync(uploadsPath);
+    
+    if (!uploadsExists) {
+      return res.json({ 
+        error: 'uploads folder does not exist',
+        uploadsPath,
+        currentDir: __dirname
+      });
+    }
+    
+    const restaurantsPath = path.join(uploadsPath, 'restaurants');
+    const menuItemsPath = path.join(uploadsPath, 'menu-items');
+    
+    const restaurants = fs.existsSync(restaurantsPath) 
+      ? fs.readdirSync(restaurantsPath)
+      : [];
+      
+    const menuItems = fs.existsSync(menuItemsPath)
+      ? fs.readdirSync(menuItemsPath)
+      : [];
+    
+    res.json({
+      uploadsExists: true,
+      uploadsPath,
+      restaurants: restaurants.slice(0, 10), // Show first 10
+      menuItems: menuItems.slice(0, 10),
+      totalRestaurants: restaurants.length,
+      totalMenuItems: menuItems.length,
+      sampleUrls: {
+        restaurant: `/uploads/restaurants/${restaurants[0] || 'none'}`,
+        menuItem: `/uploads/menu-items/${menuItems[0] || 'none'}`
+      }
+    });
+  } catch (error) {
+    res.json({ 
+      error: error.message,
+      uploadsPath,
+      currentDir: __dirname
+    });
+  }
+});
 
 // Enhanced health check with database status
 app.get('/api/health', async (req, res) => {
@@ -225,7 +284,11 @@ app.get('/api/health', async (req, res) => {
         port: mongoose.connection.port
       },
       collections,
-      availableModels: Object.keys(mongoose.models)
+      availableModels: Object.keys(mongoose.models),
+      uploads: {
+        path: uploadsPath,
+        exists: fs.existsSync(uploadsPath)
+      }
     });
   } catch (error) {
     res.status(500).json({
@@ -244,7 +307,7 @@ if (process.env.NODE_ENV !== 'production') {
       const { identifier } = req.params;
       const Payment = require('./models/Payment');
       
-      console.log('🔍 Debug request for payment:', identifier);
+      console.log('Debug request for payment:', identifier);
       
       // Try to find payment by various identifiers
       let payment = await Payment.findOne({
@@ -256,7 +319,7 @@ if (process.env.NODE_ENV !== 'production') {
       }).populate('order').populate('customer', 'name email').populate('restaurant', 'name');
       
       if (payment) {
-        console.log('✅ Payment found in debug:', payment.paymentId);
+        console.log('Payment found in debug:', payment.paymentId);
         res.json({ 
           found: true, 
           payment: {
@@ -272,7 +335,7 @@ if (process.env.NODE_ENV !== 'production') {
           }
         });
       } else {
-        console.log('❌ Payment not found in debug');
+        console.log('Payment not found in debug');
         
         // Show recent payments for context
         const recentPayments = await Payment.find()
@@ -293,7 +356,7 @@ if (process.env.NODE_ENV !== 'production') {
         });
       }
     } catch (error) {
-      console.error('💥 Debug endpoint error:', error);
+      console.error('Debug endpoint error:', error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -310,7 +373,7 @@ if (process.env.NODE_ENV !== 'production') {
         .populate('restaurant', 'name')
         .populate('order', 'orderNumber total');
       
-      console.log('📋 Debug: Found', payments.length, 'payments in database');
+      console.log('Debug: Found', payments.length, 'payments in database');
       
       res.json({ 
         count: payments.length,
@@ -326,7 +389,7 @@ if (process.env.NODE_ENV !== 'production') {
         }))
       });
     } catch (error) {
-      console.error('💥 Debug all payments error:', error);
+      console.error('Debug all payments error:', error);
       res.status(500).json({ error: error.message });
     }
   });
@@ -336,7 +399,7 @@ if (process.env.NODE_ENV !== 'production') {
     try {
       const Payment = require('./models/Payment');
       
-      console.log('🧪 Creating test payment via debug endpoint...');
+      console.log('Creating test payment via debug endpoint...');
       
       const testPayment = new Payment({
         stripePaymentIntentId: `debug_test_${Date.now()}`,
@@ -356,7 +419,7 @@ if (process.env.NODE_ENV !== 'production') {
       });
 
       const savedPayment = await testPayment.save();
-      console.log('✅ Debug test payment created:', savedPayment.paymentId);
+      console.log('Debug test payment created:', savedPayment.paymentId);
       
       // Verify it exists
       const foundPayment = await Payment.findById(savedPayment._id);
@@ -373,7 +436,7 @@ if (process.env.NODE_ENV !== 'production') {
         }
       });
     } catch (error) {
-      console.error('💥 Test payment creation failed:', error);
+      console.error('Test payment creation failed:', error);
       res.status(500).json({ 
         success: false,
         error: error.message,
@@ -452,24 +515,25 @@ const HOST = process.env.NODE_ENV === 'production' ? '0.0.0.0' : '0.0.0.0';
 
 server.listen(PORT, HOST, () => {
   console.log('================================================');
-  console.log(`🚀 Server Running on ${HOST}:${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Server Running on ${HOST}:${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   
   if (process.env.NODE_ENV === 'production') {
-    console.log(`🌐 Production URL: https://your-app-name.onrender.com`);
+    console.log(`Production URL: https://your-app-name.onrender.com`);
   } else {
-    console.log(`🌐 Local: http://localhost:${PORT}`);
-    console.log(`🌐 Network: http://192.168.0.26:${PORT}`);
-    console.log(`📱 React Native URL: http://192.168.0.26:${PORT}/api`);
-    console.log(`🧪 Debug Endpoints Available:`);
+    console.log(`Local: http://localhost:${PORT}`);
+    console.log(`Network: http://192.168.0.26:${PORT}`);
+    console.log(`React Native URL: http://192.168.0.26:${PORT}/api`);
+    console.log(`Debug Endpoints Available:`);
     console.log(`   - GET /api/debug/payments/all`);
     console.log(`   - GET /api/debug/payment/:identifier`);
     console.log(`   - POST /api/debug/test-payment`);
+    console.log(`   - GET /api/debug/files`);
   }
   
-  console.log(`🔧 CORS: Enabled for React Native`);
-  console.log(`🔧 JSON Parsing: Enabled for all routes`);
-  console.log(`📋 Health Check: GET /api/health`);
+  console.log(`CORS: Enabled for React Native`);
+  console.log(`JSON Parsing: Enabled for all routes`);
+  console.log(`Health Check: GET /api/health`);
   console.log('================================================');
 });
 
