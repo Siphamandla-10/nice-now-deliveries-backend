@@ -1,4 +1,4 @@
-// models/MenuItem.js - Enhanced Menu items with specials support
+// models/MenuItem.js - Enhanced with proper image support like Restaurant model
 const mongoose = require('mongoose');
 
 const menuItemSchema = new mongoose.Schema({
@@ -37,6 +37,24 @@ const menuItemSchema = new mongoose.Schema({
     min: [0, 'Price cannot be negative']
   },
   
+  // Enhanced image structure (similar to Restaurant model)
+  images: {
+    mainImage: {
+      filename: { type: String, default: '' },
+      path: { type: String, default: '' },
+      url: { type: String, default: '' },
+      uploadedAt: { type: Date }
+    },
+    gallery: [{
+      filename: { type: String, required: true },
+      path: { type: String, required: true },
+      url: { type: String, required: true },
+      caption: { type: String, default: '' },
+      uploadedAt: { type: Date, default: Date.now }
+    }]
+  },
+  
+  // Legacy image field for backward compatibility
   image: {
     filename: String,
     path: String,
@@ -110,19 +128,19 @@ const menuItemSchema = new mongoose.Schema({
     isActive: { type: Boolean, default: false },
     specialName: String,
     description: String,
-    originalPrice: Number, // Store original price when special is active
-    specialPrice: Number,  // Discounted price
+    originalPrice: Number,
+    specialPrice: Number,
     discountType: {
       type: String,
       enum: ['percentage', 'fixed'],
       default: 'percentage'
     },
-    discountValue: Number, // Percentage or fixed amount
+    discountValue: Number,
     startDate: Date,
     endDate: Date,
     minimumOrder: { type: Number, default: 0 },
-    maxRedemptions: Number, // Maximum number of times this special can be used
-    currentRedemptions: { type: Number, default: 0 }, // Current usage count
+    maxRedemptions: Number,
+    currentRedemptions: { type: Number, default: 0 },
     createdAt: Date,
     updatedAt: Date,
     deactivatedAt: Date
@@ -158,6 +176,18 @@ menuItemSchema.index({ category: 1, isAvailable: 1 });
 menuItemSchema.index({ featured: 1, restaurant: 1 });
 menuItemSchema.index({ 'specialOffer.isActive': 1, 'specialOffer.endDate': 1 });
 menuItemSchema.index({ tags: 1 });
+
+// Virtual: Get main image URL (similar to Restaurant model)
+menuItemSchema.virtual('mainImageUrl').get(function () {
+  if (this.images?.mainImage?.url) {
+    return this.images.mainImage.url;
+  }
+  // Fallback to legacy image field
+  if (this.image?.url) {
+    return this.image.url;
+  }
+  return '/images/default-food.png';
+});
 
 // Virtual: Get effective price (special price if active, otherwise regular price)
 menuItemSchema.virtual('effectivePrice').get(function() {
@@ -202,6 +232,61 @@ menuItemSchema.virtual('isActuallyAvailable').get(function() {
   }
   return true;
 });
+
+// Method: Update main image (similar to Restaurant model)
+menuItemSchema.methods.updateMainImage = function (imageData) {
+  if (!this.images) {
+    this.images = {};
+  }
+  
+  this.images.mainImage = {
+    filename: imageData.filename,
+    path: imageData.path,
+    url: imageData.url,
+    uploadedAt: new Date()
+  };
+  
+  // Update legacy field for backward compatibility
+  this.image = {
+    filename: imageData.filename,
+    path: imageData.path,
+    url: imageData.url,
+    uploadedAt: new Date()
+  };
+  
+  return this.save();
+};
+
+// Method: Add image to gallery
+menuItemSchema.methods.addToGallery = function (imageData) {
+  if (!this.images) {
+    this.images = { gallery: [] };
+  }
+  if (!this.images.gallery) {
+    this.images.gallery = [];
+  }
+  
+  this.images.gallery.push({
+    filename: imageData.filename,
+    path: imageData.path,
+    url: imageData.url,
+    caption: imageData.caption || '',
+    uploadedAt: new Date()
+  });
+  
+  return this.save();
+};
+
+// Method: Remove image from gallery
+menuItemSchema.methods.removeFromGallery = function (imageId) {
+  if (!this.images?.gallery) return Promise.resolve(this);
+  
+  this.images.gallery = this.images.gallery.filter(
+    img => img._id.toString() !== imageId.toString()
+  );
+  
+  return this.save();
+};
 
 // Method: Apply special offer
 menuItemSchema.methods.applySpecialOffer = function(specialData) {
@@ -275,7 +360,7 @@ menuItemSchema.methods.isLowStock = function() {
 // Method: Increment order count
 menuItemSchema.methods.incrementOrderCount = function(quantity = 1) {
   this.orderCount += quantity;
-  this.popularity += quantity; // Simple popularity scoring
+  this.popularity += quantity;
   
   // Update special redemptions if applicable
   if (this.hasActiveSpecial && this.specialOffer.maxRedemptions) {

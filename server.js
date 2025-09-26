@@ -1,4 +1,4 @@
-// server.js - UPDATED FOR DEPLOYMENT
+// server.js - UPDATED FOR DEPLOYMENT WITH MODEL IMPORTS
 require('dotenv').config();
 
 const express = require('express');
@@ -154,6 +154,16 @@ const testDatabaseOperations = async () => {
   }
 };
 
+// Import models to register them with mongoose - CRITICAL FOR MODEL ACCESS
+console.log('📦 Loading models...');
+require('./models/User');
+require('./models/Restaurant');
+require('./models/MenuItem');
+require('./models/Driver');
+require('./models/Order');
+require('./models/Payment');
+console.log('✅ Models loaded:', Object.keys(mongoose.models));
+
 // Load and register routes
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
@@ -214,7 +224,8 @@ app.get('/api/health', async (req, res) => {
         host: mongoose.connection.host,
         port: mongoose.connection.port
       },
-      collections
+      collections,
+      availableModels: Object.keys(mongoose.models)
     });
   } catch (error) {
     res.status(500).json({
