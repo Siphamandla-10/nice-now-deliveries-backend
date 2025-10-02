@@ -1,10 +1,16 @@
-// routes/orders.js - Fixed version with Request Driver Route
+// routes/orders.js - Complete Enhanced Version with Test Route
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const { authMiddleware } = require('../middleware/auth');
 const Order = require('../models/Order');
 const Restaurant = require('../models/Restaurant'); // Add this if you have it
+
+// Test route to verify enhanced routes are loaded
+router.get('/test-debug', (req, res) => {
+  console.log('ENHANCED ROUTES LOADED SUCCESSFULLY');
+  res.json({ message: 'Enhanced debug routes are working!', timestamp: new Date() });
+});
 
 // Generate order number
 const generateOrderNumber = () => {
@@ -14,17 +20,136 @@ const generateOrderNumber = () => {
   return `ORD-${dateStr}-${randomNum}`;
 };
 
+// GET /api/orders/my-orders - Get user's orders (WITH COMPREHENSIVE DEBUG LOGGING)
+router.get('/my-orders', authMiddleware, async (req, res) => {
+  console.log('=== GET MY ORDERS DEBUG ===');
+  console.log('Request received for /my-orders');
+  
+  try {
+    // Log user info
+    console.log('User info:', {
+      id: req.user._id || req.user.id,
+      name: req.user.name,
+      email: req.user.email,
+      userType: req.user.userType
+    });
+
+    const { page = 1, limit = 20, status } = req.query;
+    const skip = (page - 1) * limit;
+    
+    console.log('Query params:', { page, limit, status, skip });
+
+    // Build query
+    const userId = req.user._id || req.user.id;
+    const query = { customer: userId };
+    
+    if (status) {
+      query.status = status;
+    }
+    
+    console.log('Database query:', JSON.stringify(query, null, 2));
+    console.log('Looking for orders with customer ID:', userId);
+
+    // First, check if any orders exist at all
+    const totalOrdersInDB = await Order.countDocuments({});
+    console.log('Total orders in database:', totalOrdersInDB);
+    
+    // Check orders for this specific user
+    const userOrderCount = await Order.countDocuments(query);
+    console.log('Orders for this customer:', userOrderCount);
+
+    // If no orders for user, let's see what customer IDs exist
+    if (userOrderCount === 0) {
+      console.log('No orders found for this customer');
+      
+      // Check what customer IDs exist in the database
+      const existingCustomerIds = await Order.distinct('customer');
+      console.log('Existing customer IDs in orders:', existingCustomerIds);
+      
+      // Check if any orders have this user ID as string vs ObjectId
+      const userIdString = userId.toString();
+      const alternativeQuery = { customer: userIdString };
+      const altCount = await Order.countDocuments(alternativeQuery);
+      console.log('Alternative query result (string ID):', altCount);
+      
+      // Try to find orders with ObjectId conversion
+      try {
+        const objectIdQuery = { customer: new mongoose.Types.ObjectId(userId) };
+        const objectIdCount = await Order.countDocuments(objectIdQuery);
+        console.log('ObjectId query result:', objectIdCount);
+      } catch (objIdError) {
+        console.log('ObjectId conversion failed:', objIdError.message);
+      }
+    }
+
+    // Fetch the orders
+    console.log('Executing main query...');
+    const orders = await Order.find(query)
+      .populate('restaurant', 'name address phone')
+      .populate('customer', 'name email phone')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip(skip);
+
+    console.log('Query executed successfully');
+    console.log('Found orders:', orders.length);
+    
+    if (orders.length > 0) {
+      console.log('Sample order:', {
+        id: orders[0]._id,
+        orderNumber: orders[0].orderNumber,
+        status: orders[0].status,
+        total: orders[0].total,
+        restaurant: orders[0].restaurant?.name,
+        createdAt: orders[0].createdAt,
+        customer: orders[0].customer
+      });
+    }
+
+    const total = await Order.countDocuments(query);
+    console.log('Total matching orders:', total);
+
+    const response = {
+      success: true,
+      orders,
+      pagination: {
+        current: parseInt(page),
+        total: Math.ceil(total / limit),
+        hasMore: skip + orders.length < total
+      }
+    };
+
+    console.log('Sending response with', orders.length, 'orders');
+    console.log('==========================');
+    
+    res.json(response);
+
+  } catch (error) {
+    console.error('GET MY ORDERS ERROR:', error);
+    console.error('Error name:', error.name);
+    console.error('Error message:', error.message);
+    console.error('Error stack:', error.stack);
+    console.log('==========================');
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch orders',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
 // POST /api/orders - Create new order
 router.post('/', authMiddleware, async (req, res) => {
   console.log('=== ORDER CREATION DEBUG ===');
-  console.log('📝 Order creation attempt started');
-  console.log('👤 User from middleware:', {
+  console.log('Order creation attempt started');
+  console.log('User from middleware:', {
     id: req.user._id || req.user.id,
     name: req.user.name,
     email: req.user.email,
     userType: req.user.userType
   });
-  console.log('📦 Order data received:', JSON.stringify(req.body, null, 2));
+  console.log('Order data received:', JSON.stringify(req.body, null, 2));
   console.log('============================');
 
   try {
@@ -46,7 +171,7 @@ router.post('/', authMiddleware, async (req, res) => {
       });
     }
 
-    console.log('✅ User is customer, creating order...');
+    console.log('User is customer, creating order...');
 
     // Get restaurant info (if Restaurant model exists)
     let restaurant;
@@ -120,14 +245,14 @@ router.post('/', authMiddleware, async (req, res) => {
       paymentStatus: 'pending'
     };
 
-    console.log('📋 Final order data:', JSON.stringify(orderData, null, 2));
-    console.log('💾 Order model created, attempting to save...');
+    console.log('Final order data:', JSON.stringify(orderData, null, 2));
+    console.log('Order model created, attempting to save...');
 
     // Create and save order
     const order = new Order(orderData);
     const savedOrder = await order.save();
 
-    console.log('✅ Order saved successfully:', savedOrder._id);
+    console.log('Order saved successfully:', savedOrder._id);
 
     // Populate the order for response
     const populatedOrder = await Order.findById(savedOrder._id)
@@ -141,7 +266,7 @@ router.post('/', authMiddleware, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Order creation error:', error);
+    console.error('Order creation error:', error);
     
     if (error.name === 'ValidationError') {
       const errors = Object.keys(error.errors).map(key => ({
@@ -164,47 +289,11 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/orders/my-orders - Get user's orders
-router.get('/my-orders', authMiddleware, async (req, res) => {
-  try {
-    const { page = 1, limit = 20, status } = req.query;
-    const skip = (page - 1) * limit;
-
-    const query = { customer: req.user._id || req.user.id };
-    if (status) {
-      query.status = status;
-    }
-
-    const orders = await Order.find(query)
-      .populate('restaurant', 'name address phone')
-      .populate('customer', 'name email phone')
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
-      .skip(skip);
-
-    const total = await Order.countDocuments(query);
-
-    res.json({
-      success: true,
-      orders,
-      pagination: {
-        current: parseInt(page),
-        total: Math.ceil(total / limit),
-        hasMore: skip + orders.length < total
-      }
-    });
-  } catch (error) {
-    console.error('Get orders error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch orders'
-    });
-  }
-});
-
 // GET /api/orders/:id - Get order by ID
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
+    console.log('Getting order by ID:', req.params.id);
+    
     const order = await Order.findById(req.params.id)
       .populate('restaurant', 'name address phone')
       .populate('customer', 'name email phone')
@@ -230,6 +319,8 @@ router.get('/:id', authMiddleware, async (req, res) => {
       });
     }
 
+    console.log('Order found and access granted');
+    
     res.json({
       success: true,
       order
@@ -248,6 +339,8 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
   try {
     const { status } = req.body;
     const orderId = req.params.id;
+
+    console.log('Updating order status:', orderId, 'to', status);
 
     const validStatuses = ['pending', 'confirmed', 'accepted', 'picked_up', 'on_route', 'delivered', 'completed', 'cancelled'];
     if (!validStatuses.includes(status)) {
@@ -271,6 +364,8 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
 
     await order.save();
 
+    console.log('Order status updated successfully');
+
     res.json({
       success: true,
       message: 'Order status updated',
@@ -285,11 +380,11 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/orders/:orderId/request-driver - Request driver for order (MISSING ROUTE - FIXED)
+// POST /api/orders/:orderId/request-driver - Request driver for order
 router.post('/:orderId/request-driver', authMiddleware, async (req, res) => {
   try {
     const { orderId } = req.params;
-    console.log(`Vendor requesting driver for order: ${orderId}`);
+    console.log('Vendor requesting driver for order:', orderId);
     
     // Find the order
     const order = await Order.findById(orderId);
@@ -333,7 +428,7 @@ router.post('/:orderId/request-driver', authMiddleware, async (req, res) => {
     order.driverRequestedAt = new Date();
     await order.save();
     
-    console.log(`✅ Driver requested for order ${orderId} - marked as ready`);
+    console.log('Driver requested for order', orderId, '- marked as ready');
     
     res.json({
       success: true,
@@ -354,6 +449,8 @@ router.post('/:orderId/request-driver', authMiddleware, async (req, res) => {
 // GET /api/orders - Get all orders (for vendors and drivers)
 router.get('/', authMiddleware, async (req, res) => {
   try {
+    console.log('Getting all orders for user type:', req.user.userType);
+    
     const { status, page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
 
@@ -364,9 +461,11 @@ router.get('/', authMiddleware, async (req, res) => {
       try {
         const restaurants = await Restaurant.find({ owner: req.user._id }).select('_id');
         query.restaurant = { $in: restaurants.map(r => r._id) };
+        console.log('Vendor query - restaurants:', restaurants.length);
       } catch (error) {
         // If no Restaurant model, use vendor field
         query.vendor = req.user._id;
+        console.log('Using vendor field fallback');
       }
     } else if (req.user.userType === 'customer') {
       query.customer = req.user._id;
@@ -378,6 +477,8 @@ router.get('/', authMiddleware, async (req, res) => {
       query.status = status;
     }
 
+    console.log('Final query:', JSON.stringify(query, null, 2));
+
     const orders = await Order.find(query)
       .populate('restaurant', 'name address phone')
       .populate('customer', 'name email phone')
@@ -387,6 +488,8 @@ router.get('/', authMiddleware, async (req, res) => {
       .skip(skip);
 
     const total = await Order.countDocuments(query);
+
+    console.log('Found', orders.length, 'orders out of', total, 'total');
 
     res.json({
       success: true,
@@ -399,7 +502,46 @@ router.get('/', authMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error('Get orders error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch orders', error: error.message });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch orders', 
+      error: error.message 
+    });
+  }
+});
+
+// Additional debug route to check all orders in database
+router.get('/debug/all', authMiddleware, async (req, res) => {
+  try {
+    console.log('DEBUG: Getting all orders in database');
+    
+    const allOrders = await Order.find({}).select('_id customer orderNumber status total createdAt');
+    
+    console.log('Total orders in DB:', allOrders.length);
+    
+    const ordersByCustomer = {};
+    allOrders.forEach(order => {
+      const customerId = order.customer.toString();
+      if (!ordersByCustomer[customerId]) {
+        ordersByCustomer[customerId] = [];
+      }
+      ordersByCustomer[customerId].push({
+        id: order._id,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        total: order.total
+      });
+    });
+    
+    res.json({
+      success: true,
+      totalOrders: allOrders.length,
+      ordersByCustomer: ordersByCustomer,
+      currentUserId: req.user._id || req.user.id
+    });
+  } catch (error) {
+    console.error('Debug route error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

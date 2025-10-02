@@ -1,4 +1,4 @@
-﻿// routes/vendors.js - COMPLETE FIXED VERSION
+﻿// routes/vendors.js - COMPLETE VERSION
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -49,7 +49,7 @@ const deleteFile = (filePath) => {
   }
 };
 
-// ===== DEBUG ROUTES =====
+// ===== TEST ROUTE =====
 router.get('/test', (req, res) => {
   console.log('Vendors test route hit successfully');
   res.json({
@@ -59,59 +59,286 @@ router.get('/test', (req, res) => {
   });
 });
 
-// ===== ORDER MANAGEMENT ROUTES =====
+// ===== RESTAURANT MANAGEMENT =====
+
+// GET /api/vendors/restaurant - Get vendor's restaurant
+router.get('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    console.log('Fetching restaurant for vendor:', req.user._id);
+    
+    const restaurant = await Restaurant.findOne({ owner: req.user._id });
+    
+    if (!restaurant) {
+      return res.status(404).json({
+        success: false,
+        message: 'Restaurant not found. Please create your restaurant profile.'
+      });
+    }
+    
+    res.json({
+      success: true,
+      restaurant: restaurant
+    });
+    
+  } catch (error) {
+    console.error('Get restaurant error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch restaurant',
+      error: error.message
+    });
+  }
+});
+
+// POST /api/vendors/restaurant - Create vendor's restaurant
+router.post('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    console.log('Creating restaurant for vendor:', req.user._id);
+    console.log('Restaurant data:', req.body);
+    
+    // Check if restaurant already exists
+    const existingRestaurant = await Restaurant.findOne({ owner: req.user._id });
+    
+    if (existingRestaurant) {
+      return res.json({
+        success: true,
+        message: 'Restaurant already exists',
+        restaurant: existingRestaurant
+      });
+    }
+    
+    // Create new restaurant
+    const restaurantData = {
+      owner: req.user._id,
+      name: req.body.name || `${req.user.name}'s Restaurant`,
+      description: req.body.description || 'Welcome to our restaurant',
+      cuisine: req.body.cuisine || 'Various',
+      deliveryFee: req.body.deliveryFee || 2.99,
+      minimumOrder: req.body.minimumOrder || 0,
+      isActive: req.body.isActive || false,
+      status: req.body.status || 'active',
+      contact: req.body.contact || {
+        phone: req.user.phone || '',
+        email: req.user.email || ''
+      },
+      address: req.body.address || {
+        street: 'Address not set',
+        city: 'City',
+        state: 'State',
+        zipCode: '0000',
+        coordinates: {
+          latitude: 0,
+          longitude: 0
+        }
+      }
+    };
+    
+    const restaurant = new Restaurant(restaurantData);
+    await restaurant.save();
+    
+    console.log('Restaurant created successfully:', restaurant._id);
+    
+    res.status(201).json({
+      success: true,
+      message: 'Restaurant created successfully',
+      restaurant: restaurant
+    });
+    
+  } catch (error) {
+    console.error('Create restaurant error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create restaurant',
+      error: error.message
+    });
+  }
+});
+
+// PUT /api/vendors/restaurant - Update vendor's restaurant
+router.put('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    console.log('Updating restaurant for vendor:', req.user._id);
+    console.log('Update data:', req.body);
+    
+    const restaurant = await Restaurant.findOne({ owner: req.user._id });
+    
+    if (!restaurant) {
+      return res.status(404).json({
+        success: false,
+        message: 'Restaurant not found'
+      });
+    }
+    
+    // Update allowed fields
+    const allowedFields = [
+      'name', 'description', 'cuisine', 'deliveryFee', 'minimumOrder',
+      'contact', 'address', 'hours', 'isActive', 'status'
+    ];
+    
+    allowedFields.forEach(field => {
+      if (req.body[field] !== undefined) {
+        restaurant[field] = req.body[field];
+      }
+    });
+    
+    await restaurant.save();
+    
+    console.log('Restaurant updated successfully');
+    
+    res.json({
+      success: true,
+      message: 'Restaurant updated successfully',
+      restaurant: restaurant
+    });
+    
+  } catch (error) {
+    console.error('Update restaurant error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update restaurant',
+      error: error.message
+    });
+  }
+});
+
+// POST /api/vendors/restaurant/image - Upload restaurant image
+router.post('/restaurant/image', authMiddleware, vendorMiddleware, upload.single('image'), async (req, res) => {
+  try {
+    console.log('Uploading restaurant image');
+    
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No image file provided'
+      });
+    }
+    
+    const { imageType } = req.body;
+    
+    if (!imageType || !['profile', 'cover'].includes(imageType)) {
+      deleteFile(req.file.path);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid image type. Must be "profile" or "cover"'
+      });
+    }
+    
+    const restaurant = await Restaurant.findOne({ owner: req.user._id });
+    
+    if (!restaurant) {
+      deleteFile(req.file.path);
+      return res.status(404).json({
+        success: false,
+        message: 'Restaurant not found'
+      });
+    }
+    
+    const imageUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+    
+    if (imageType === 'profile') {
+      if (restaurant.images?.profileImage?.path) {
+        deleteFile(restaurant.images.profileImage.path);
+      }
+      
+      restaurant.images = restaurant.images || {};
+      restaurant.images.profileImage = {
+        filename: req.file.filename,
+        path: req.file.path,
+        url: imageUrl,
+        uploadedAt: new Date()
+      };
+    } else if (imageType === 'cover') {
+      if (restaurant.images?.coverImage?.path) {
+        deleteFile(restaurant.images.coverImage.path);
+      }
+      
+      restaurant.images = restaurant.images || {};
+      restaurant.images.coverImage = {
+        filename: req.file.filename,
+        path: req.file.path,
+        url: imageUrl,
+        uploadedAt: new Date()
+      };
+    }
+    
+    await restaurant.save();
+    
+    res.json({
+      success: true,
+      message: 'Image uploaded successfully',
+      imageUrl: imageUrl
+    });
+    
+  } catch (error) {
+    console.error('Upload restaurant image error:', error);
+    if (req.file) deleteFile(req.file.path);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upload image',
+      error: error.message
+    });
+  }
+});
+
+// ===== ORDER MANAGEMENT =====
 
 // GET /api/vendors/orders - Get orders for vendor's restaurant
 router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     console.log('=== VENDOR ORDERS FETCH ===');
-    console.log('User ID:', req.user._id || req.user.id);
-    console.log('User Type:', req.user.userType);
+    console.log('User ID:', req.user._id);
     console.log('Query params:', req.query);
 
     const userId = req.user._id || req.user.id;
     
-    // Find the vendor's restaurant
     const restaurant = await Restaurant.findOne({ owner: userId });
-    console.log('Found restaurant:', restaurant ? restaurant.name : 'None');
+    
+    if (!restaurant) {
+      console.log('No restaurant found for vendor');
+      return res.json({
+        success: true,
+        orders: [],
+        pagination: {
+          current: 1,
+          total: 0,
+          totalOrders: 0
+        }
+      });
+    }
 
-    let orders = [];
+    console.log('Found restaurant:', restaurant.name);
 
-    if (restaurant) {
-      // Find orders by restaurant ID
-      orders = await Order.find({ 
-        restaurant: restaurant._id 
-      })
+    const { page = 1, limit = 20, status } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    let query = { restaurant: restaurant._id };
+    
+    if (status && status !== 'all') {
+      query.status = status.toLowerCase();
+    }
+
+    const orders = await Order.find(query)
       .populate('customer', 'name email phone')
       .populate('restaurant', 'name address phone')
-      .populate('driver', 'name phone')
-      .sort({ createdAt: -1 });
-      
-      console.log(`Found ${orders.length} orders by restaurant ID`);
-    }
+      .populate({
+        path: 'driver',
+        populate: { path: 'user', select: 'name phone' }
+      })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
 
-    // Apply filters and pagination
-    const { page = 1, limit = 20, status } = req.query;
-    const skip = (page - 1) * limit;
+    const total = await Order.countDocuments(query);
 
-    let filteredOrders = orders;
-    if (status && status !== 'all') {
-      filteredOrders = orders.filter(order => 
-        order.status?.toLowerCase() === status.toLowerCase()
-      );
-    }
-
-    const paginatedOrders = filteredOrders.slice(skip, skip + parseInt(limit));
-
-    console.log(`Returning ${paginatedOrders.length} orders`);
+    console.log(`Returning ${orders.length} orders out of ${total} total`);
 
     res.json({
       success: true,
-      orders: paginatedOrders,
+      orders: orders,
       pagination: {
         current: parseInt(page),
-        total: Math.ceil(filteredOrders.length / limit),
-        totalOrders: filteredOrders.length
+        total: Math.ceil(total / parseInt(limit)),
+        totalOrders: total
       }
     });
 
@@ -125,18 +352,17 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
   }
 });
 
-// PATCH /api/vendors/orders/:id/status - Update order status - COMPLETELY FIXED
+// PATCH /api/vendors/orders/:id/status - Update order status
 router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     console.log('=== ORDER STATUS UPDATE ===');
     console.log('Order ID:', req.params.id);
     console.log('New Status:', req.body.status);
-    console.log('User ID:', req.user._id || req.user.id);
+    console.log('User ID:', req.user._id);
 
     const { status } = req.body;
     const orderId = req.params.id;
 
-    // Validate inputs
     if (!status) {
       return res.status(400).json({
         success: false,
@@ -151,17 +377,25 @@ router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req,
       });
     }
 
-    // Validate status value
-    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'cancelled'];
+    const validStatuses = [
+      'pending', 
+      'confirmed', 
+      'preparing', 
+      'ready', 
+      'out_for_delivery', 
+      'delivered', 
+      'cancelled'
+    ];
+    
     if (!validStatuses.includes(status.toLowerCase())) {
       return res.status(400).json({
         success: false,
-        message: `Invalid status. Valid statuses are: ${validStatuses.join(', ')}`
+        message: `Invalid status. Valid statuses: ${validStatuses.join(', ')}`
       });
     }
 
-    // Find the order
     const order = await Order.findById(orderId);
+    
     if (!order) {
       return res.status(404).json({
         success: false,
@@ -175,7 +409,6 @@ router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req,
       restaurant: order.restaurant
     });
 
-    // Verify ownership - check if user owns the restaurant
     const userId = req.user._id || req.user.id;
     const restaurant = await Restaurant.findOne({ 
       _id: order.restaurant, 
@@ -191,45 +424,24 @@ router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req,
 
     console.log('Ownership verified. Updating status...');
 
-    // Update the order status - SIMPLE DIRECT UPDATE
-    const updatedOrder = await Order.findByIdAndUpdate(
-      orderId,
-      { 
-        status: status.toLowerCase(),
-        [`${status.toLowerCase()}At`]: new Date(),
-        updatedAt: new Date()
-      },
-      { 
-        new: true,
-        runValidators: true 
-      }
-    );
-
-    if (!updatedOrder) {
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to update order status'
-      });
-    }
+    order.status = status.toLowerCase();
+    await order.save();
 
     console.log(`✅ Order ${orderId} status updated to ${status}`);
 
     res.json({
       success: true,
       message: 'Order status updated successfully',
-      order: updatedOrder
+      order: order
     });
 
   } catch (error) {
     console.error('❌ Order status update error:', error);
     
-    // Handle specific MongoDB errors
     if (error.name === 'ValidationError') {
-      console.error('Validation error details:', error.errors);
       return res.status(400).json({
         success: false,
-        message: 'Validation error: ' + error.message,
-        details: error.errors
+        message: 'Validation error: ' + error.message
       });
     }
     
@@ -248,9 +460,65 @@ router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req,
   }
 });
 
-// ===== MENU MANAGEMENT ROUTES =====
+// POST /api/vendors/orders/:orderId/request-driver - Request driver for order
+router.post('/orders/:orderId/request-driver', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    
+    console.log('Requesting driver for order:', orderId);
+    
+    const order = await Order.findById(orderId);
+    
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    const restaurant = await Restaurant.findOne({ 
+      _id: order.restaurant, 
+      owner: req.user._id 
+    });
+    
+    if (!restaurant) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized for this order'
+      });
+    }
+    
+    if (order.driver) {
+      return res.status(400).json({
+        success: false,
+        message: 'Driver already assigned to this order'
+      });
+    }
+    
+    order.status = 'ready';
+    await order.save();
+    
+    console.log('Order marked as ready for driver pickup');
+    
+    res.json({
+      success: true,
+      message: 'Order is now available for drivers',
+      order
+    });
+    
+  } catch (error) {
+    console.error('Request driver error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error requesting driver',
+      error: error.message
+    });
+  }
+});
 
-// Get vendor's menu items
+// ===== MENU MANAGEMENT =====
+
+// GET /api/vendors/menu - Get vendor's menu items
 router.get('/menu', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     console.log('Getting menu for user:', req.user._id);
@@ -258,30 +526,12 @@ router.get('/menu', authMiddleware, vendorMiddleware, async (req, res) => {
     let restaurant = await Restaurant.findOne({ owner: req.user._id });
     
     if (!restaurant) {
-      restaurant = new Restaurant({
-        owner: req.user._id,
-        name: `${req.user.name}'s Restaurant`,
-        description: "Delicious food served fresh daily",
-        status: 'pending_approval',
-        isActive: false,
-        cuisine: 'Mixed',
-        deliveryFee: 2.99,
-        minimumOrder: 0,
-        address: {
-          street: 'Address not set',
-          city: 'City',
-          state: 'State',
-          zipCode: '00000',
-          coordinates: { latitude: 0, longitude: 0 }
-        },
-        contact: {
-          phone: req.user.phone || '000-000-0000',
-          email: req.user.email || ''
-        }
+      return res.json({
+        success: true,
+        menuItems: [],
+        restaurant: null,
+        message: 'Please create your restaurant profile first'
       });
-      
-      await restaurant.save();
-      console.log('Created new restaurant for vendor');
     }
     
     const menuItems = await MenuItem.find({ restaurant: restaurant._id })
@@ -307,10 +557,9 @@ router.get('/menu', authMiddleware, vendorMiddleware, async (req, res) => {
   }
 });
 
-// Create menu item
+// POST /api/vendors/menu - Create menu item
 router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
   const contentType = req.get('Content-Type') || '';
-  
   if (contentType.includes('multipart/form-data')) {
     upload.single('image')(req, res, next);
   } else {
@@ -326,30 +575,11 @@ router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
     let restaurant = await Restaurant.findOne({ owner: req.user._id });
     
     if (!restaurant) {
-      restaurant = new Restaurant({
-        owner: req.user._id,
-        name: `${req.user.name}'s Restaurant`,
-        description: "Delicious food served fresh daily",
-        status: 'pending_approval',
-        isActive: false,
-        cuisine: 'Mixed',
-        deliveryFee: 2.99,
-        minimumOrder: 0,
-        address: {
-          street: 'Address not set',
-          city: 'City', 
-          state: 'State',
-          zipCode: '00000',
-          coordinates: { latitude: 0, longitude: 0 }
-        },
-        contact: {
-          phone: req.user.phone || '000-000-0000',
-          email: req.user.email || ''
-        }
+      if (req.file) deleteFile(req.file.path);
+      return res.status(400).json({
+        success: false,
+        message: 'Please create your restaurant profile first'
       });
-      
-      await restaurant.save();
-      console.log('Created restaurant');
     }
     
     const { name, description, price, category } = req.body;
@@ -358,7 +588,7 @@ router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
       if (req.file) deleteFile(req.file.path);
       return res.status(400).json({
         success: false,
-        message: 'Name and price are required fields'
+        message: 'Name and price are required'
       });
     }
     
@@ -397,7 +627,7 @@ router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
     const menuItem = new MenuItem(menuItemData);
     await menuItem.save();
     
-    console.log('Menu item created successfully:', menuItem._id);
+    console.log('Menu item created:', menuItem._id);
     
     res.status(201).json({
       success: true,
@@ -416,10 +646,9 @@ router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
   }
 });
 
-// Update menu item
+// PUT /api/vendors/menu/:id - Update menu item
 router.put('/menu/:id', authMiddleware, vendorMiddleware, (req, res, next) => {
   const contentType = req.get('Content-Type') || '';
-  
   if (contentType.includes('multipart/form-data')) {
     upload.single('image')(req, res, next);
   } else {
@@ -449,7 +678,10 @@ router.put('/menu/:id', authMiddleware, vendorMiddleware, (req, res, next) => {
     
     const oldImagePath = menuItem.image?.path;
     
-    const updateFields = ['name', 'description', 'price', 'category', 'isAvailable', 'isVegetarian', 'isVegan', 'isGlutenFree', 'spiceLevel', 'preparationTime'];
+    const updateFields = [
+      'name', 'description', 'price', 'category', 'isAvailable', 
+      'isVegetarian', 'isVegan', 'isGlutenFree', 'spiceLevel', 'preparationTime'
+    ];
     
     updateFields.forEach(field => {
       if (req.body[field] !== undefined) {
@@ -500,7 +732,7 @@ router.put('/menu/:id', authMiddleware, vendorMiddleware, (req, res, next) => {
   }
 });
 
-// Delete menu item
+// DELETE /api/vendors/menu/:id - Delete menu item
 router.delete('/menu/:id', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
@@ -537,6 +769,47 @@ router.delete('/menu/:id', authMiddleware, vendorMiddleware, async (req, res) =>
     res.status(500).json({
       success: false,
       message: 'Error deleting menu item',
+      error: error.message
+    });
+  }
+});
+
+// PATCH /api/vendors/menu/:id/availability - Toggle menu item availability
+router.patch('/menu/:id/availability', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isAvailable } = req.body;
+    
+    const menuItem = await MenuItem.findById(id).populate('restaurant');
+    
+    if (!menuItem) {
+      return res.status(404).json({
+        success: false,
+        message: 'Menu item not found'
+      });
+    }
+    
+    if (menuItem.restaurant.owner.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized'
+      });
+    }
+    
+    menuItem.isAvailable = isAvailable;
+    await menuItem.save();
+    
+    res.json({
+      success: true,
+      message: 'Availability updated',
+      menuItem
+    });
+    
+  } catch (error) {
+    console.error('Toggle availability error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error updating availability',
       error: error.message
     });
   }

@@ -1,7 +1,14 @@
-// models/Restaurant.js - Updated with specials tracking
+// models/Restaurant.js - Complete merged version
 const mongoose = require('mongoose');
 
 const restaurantSchema = new mongoose.Schema({
+  owner: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: [true, 'Restaurant owner is required'],
+    unique: true
+  },
+  
   name: {
     type: String,
     required: [true, 'Restaurant name is required'],
@@ -9,23 +16,110 @@ const restaurantSchema = new mongoose.Schema({
     minlength: [2, 'Restaurant name must be at least 2 characters'],
     maxlength: [100, 'Restaurant name cannot exceed 100 characters']
   },
+  
   description: {
     type: String,
-    required: [true, 'Restaurant description is required'],
+    default: 'Welcome to our restaurant',
     trim: true
-  },
-  cuisine: {
-    type: String,
-    required: [true, 'Cuisine type is required'],
-    trim: true
-  },
-  owner: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: [true, 'Restaurant owner is required']
   },
   
-  // Updated image fields with proper structure
+  cuisine: {
+    type: String,
+    default: 'Various',
+    trim: true
+  },
+  
+  // Status and availability
+  isActive: {
+    type: Boolean,
+    default: false
+  },
+  
+  status: {
+    type: String,
+    enum: ['pending_approval', 'active', 'inactive', 'suspended'],
+    default: 'pending_approval'
+  },
+  
+  isFeatured: {
+    type: Boolean,
+    default: false
+  },
+  
+  // Pricing
+  deliveryFee: {
+    type: Number,
+    default: 2.99,
+    min: 0
+  },
+  
+  minimumOrder: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  
+  // Ratings
+  rating: {
+    type: Number,
+    default: 0,
+    min: 0,
+    max: 5
+  },
+  
+  totalRatings: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  
+  // Contact information
+  contact: {
+    phone: {
+      type: String,
+      default: ''
+    },
+    email: {
+      type: String,
+      default: ''
+    }
+  },
+  
+  // Address
+  address: {
+    street: {
+      type: String,
+      default: 'Address not set',
+      trim: true
+    },
+    city: {
+      type: String,
+      default: 'City',
+      trim: true
+    },
+    state: {
+      type: String,
+      default: 'State',
+      trim: true
+    },
+    zipCode: {
+      type: String,
+      default: '0000',
+      trim: true
+    },
+    coordinates: {
+      latitude: {
+        type: Number,
+        default: 0
+      },
+      longitude: {
+        type: Number,
+        default: 0
+      }
+    }
+  },
+  
+  // Images - Updated structure
   images: {
     profileImage: {
       filename: { type: String, default: '' },
@@ -52,47 +146,62 @@ const restaurantSchema = new mongoose.Schema({
   image: { type: String, default: '' },
   coverImage: { type: String, default: '' },
   
-  rating: { type: Number, default: 0, min: 0, max: 5 },
-  totalRatings: { type: Number, default: 0, min: 0 },
-  deliveryFee: { type: Number, default: 2.99, min: 0 },
-  minimumOrder: { type: Number, default: 0, min: 0 },
-  
-  address: {
-    street: { type: String, required: true, trim: true },
-    city: { type: String, required: true, trim: true },
-    state: { type: String, required: true, trim: true },
-    zipCode: { type: String, required: true, trim: true },
-    coordinates: {
-      latitude: { type: Number, required: true },
-      longitude: { type: Number, required: true }
+  // Operating hours
+  hours: {
+    monday: { 
+      open: { type: String, default: '09:00' }, 
+      close: { type: String, default: '22:00' }, 
+      closed: { type: Boolean, default: false } 
+    },
+    tuesday: { 
+      open: { type: String, default: '09:00' }, 
+      close: { type: String, default: '22:00' }, 
+      closed: { type: Boolean, default: false } 
+    },
+    wednesday: { 
+      open: { type: String, default: '09:00' }, 
+      close: { type: String, default: '22:00' }, 
+      closed: { type: Boolean, default: false } 
+    },
+    thursday: { 
+      open: { type: String, default: '09:00' }, 
+      close: { type: String, default: '22:00' }, 
+      closed: { type: Boolean, default: false } 
+    },
+    friday: { 
+      open: { type: String, default: '09:00' }, 
+      close: { type: String, default: '23:00' }, 
+      closed: { type: Boolean, default: false } 
+    },
+    saturday: { 
+      open: { type: String, default: '09:00' }, 
+      close: { type: String, default: '23:00' }, 
+      closed: { type: Boolean, default: false } 
+    },
+    sunday: { 
+      open: { type: String, default: '10:00' }, 
+      close: { type: String, default: '21:00' }, 
+      closed: { type: Boolean, default: false } 
     }
   },
   
-  contact: {
-    phone: {
-      type: String,
-      required: true,
-      match: [/^\+?[1-9]\d{1,14}$/, 'Enter valid phone number']
-    },
-    email: { type: String, match: [/.+@.+\..+/, 'Enter valid email address'] }
+  // Tags and categorization
+  tags: {
+    type: [String],
+    validate: [arr => arr.length <= 10, 'Max 10 tags allowed'],
+    default: []
   },
   
-  hours: {
-    monday: { open: { type: String, default: '09:00' }, close: { type: String, default: '22:00' }, closed: { type: Boolean, default: false } },
-    tuesday: { open: { type: String, default: '09:00' }, close: { type: String, default: '22:00' }, closed: { type: Boolean, default: false } },
-    wednesday: { open: { type: String, default: '09:00' }, close: { type: String, default: '22:00' }, closed: { type: Boolean, default: false } },
-    thursday: { open: { type: String, default: '09:00' }, close: { type: String, default: '22:00' }, closed: { type: Boolean, default: false } },
-    friday: { open: { type: String, default: '09:00' }, close: { type: String, default: '23:00' }, closed: { type: Boolean, default: false } },
-    saturday: { open: { type: String, default: '09:00' }, close: { type: String, default: '23:00' }, closed: { type: Boolean, default: false } },
-    sunday: { open: { type: String, default: '10:00' }, close: { type: String, default: '21:00' }, closed: { type: Boolean, default: false } }
+  // Business metrics
+  totalOrders: {
+    type: Number,
+    default: 0
   },
   
-  status: { type: String, enum: ['pending_approval', 'active', 'inactive', 'suspended'], default: 'pending_approval' },
-  isActive: { type: Boolean, default: true },
-  isFeatured: { type: Boolean, default: false },
-  tags: { type: [String], validate: [arr => arr.length <= 10, 'Max 10 tags allowed'] },
-  totalOrders: { type: Number, default: 0 },
-  revenue: { type: Number, default: 0 },
+  revenue: {
+    type: Number,
+    default: 0
+  },
 
   // Specials tracking
   specials: [{
@@ -108,6 +217,7 @@ const restaurantSchema = new mongoose.Schema({
     maxRedemptions: Number,
     createdAt: { type: Date, default: Date.now }
   }]
+  
 }, { 
   timestamps: true,
   toJSON: { virtuals: true },
@@ -115,10 +225,10 @@ const restaurantSchema = new mongoose.Schema({
 });
 
 // Indexes
-restaurantSchema.index({ 'address.coordinates': '2dsphere' });
 restaurantSchema.index({ owner: 1 });
 restaurantSchema.index({ isActive: 1, status: 1 });
 restaurantSchema.index({ cuisine: 1, isActive: 1 });
+restaurantSchema.index({ 'address.coordinates': '2dsphere' });
 
 // Virtual: full address
 restaurantSchema.virtual('fullAddress').get(function () {
