@@ -1,29 +1,29 @@
-﻿// routes/vendors.js - COMPLETE VERSION WITH ROOT ROUTE
+﻿// routes/vendors.js - COMPLETE VERSION WITH CLOUDINARY
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 const mongoose = require('mongoose');
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const MenuItem = require('../models/MenuItem');
 const Restaurant = require('../models/Restaurant');
 const Order = require('../models/Order');
 const { authMiddleware, vendorMiddleware } = require('../middleware/auth');
 
-// Create uploads directory
-const uploadsDir = path.join(__dirname, '../uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/');
-  },
-  filename: function (req, file, cb) {
-    const uniqueName = Date.now() + '-' + file.originalname;
-    cb(null, uniqueName);
+// Configure Cloudinary Storage for Multer
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'manu-items',
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+    transformation: [{ width: 800, height: 800, crop: 'limit' }]
   }
 });
 
@@ -41,11 +41,15 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-const deleteFile = (filePath) => {
-  if (filePath && fs.existsSync(filePath)) {
-    fs.unlink(filePath, (err) => {
-      if (err) console.error('Error deleting file:', err);
-    });
+// Delete file from Cloudinary
+const deleteFile = async (publicId) => {
+  if (publicId) {
+    try {
+      await cloudinary.uploader.destroy(publicId);
+      console.log('Deleted image from Cloudinary:', publicId);
+    } catch (err) {
+      console.error('Error deleting from Cloudinary:', err);
+    }
   }
 };
 
@@ -87,7 +91,6 @@ router.get('/', async (req, res) => {
 
 // ===== RESTAURANT MANAGEMENT =====
 
-// GET /api/vendors/restaurant - Get vendor's restaurant
 router.get('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     console.log('Fetching restaurant for vendor:', req.user._id);
@@ -116,13 +119,10 @@ router.get('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => 
   }
 });
 
-// POST /api/vendors/restaurant - Create vendor's restaurant
 router.post('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     console.log('Creating restaurant for vendor:', req.user._id);
-    console.log('Restaurant data:', req.body);
     
-    // Check if restaurant already exists
     const existingRestaurant = await Restaurant.findOne({ owner: req.user._id });
     
     if (existingRestaurant) {
@@ -133,7 +133,6 @@ router.post('/restaurant', authMiddleware, vendorMiddleware, async (req, res) =>
       });
     }
     
-    // Create new restaurant
     const restaurantData = {
       owner: req.user._id,
       name: req.body.name || `${req.user.name}'s Restaurant`,
@@ -162,8 +161,6 @@ router.post('/restaurant', authMiddleware, vendorMiddleware, async (req, res) =>
     const restaurant = new Restaurant(restaurantData);
     await restaurant.save();
     
-    console.log('Restaurant created successfully:', restaurant._id);
-    
     res.status(201).json({
       success: true,
       message: 'Restaurant created successfully',
@@ -180,11 +177,9 @@ router.post('/restaurant', authMiddleware, vendorMiddleware, async (req, res) =>
   }
 });
 
-// PUT /api/vendors/restaurant - Update vendor's restaurant
 router.put('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     console.log('Updating restaurant for vendor:', req.user._id);
-    console.log('Update data:', req.body);
     
     const restaurant = await Restaurant.findOne({ owner: req.user._id });
     
@@ -195,7 +190,6 @@ router.put('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => 
       });
     }
     
-    // Update allowed fields
     const allowedFields = [
       'name', 'description', 'cuisine', 'deliveryFee', 'minimumOrder',
       'contact', 'address', 'hours', 'isActive', 'status'
@@ -208,8 +202,6 @@ router.put('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => 
     });
     
     await restaurant.save();
-    
-    console.log('Restaurant updated successfully');
     
     res.json({
       success: true,
@@ -227,10 +219,9 @@ router.put('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => 
   }
 });
 
-// POST /api/vendors/restaurant/image - Upload restaurant image
 router.post('/restaurant/image', authMiddleware, vendorMiddleware, upload.single('image'), async (req, res) => {
   try {
-    console.log('Uploading restaurant image');
+    console.log('Uploading restaurant image to Cloudinary');
     
     if (!req.file) {
       return res.status(400).json({
@@ -242,7 +233,7 @@ router.post('/restaurant/image', authMiddleware, vendorMiddleware, upload.single
     const { imageType } = req.body;
     
     if (!imageType || !['profile', 'cover'].includes(imageType)) {
-      deleteFile(req.file.path);
+      await deleteFile(req.file.filename);
       return res.status(400).json({
         success: false,
         message: 'Invalid image type. Must be "profile" or "cover"'
@@ -252,36 +243,35 @@ router.post('/restaurant/image', authMiddleware, vendorMiddleware, upload.single
     const restaurant = await Restaurant.findOne({ owner: req.user._id });
     
     if (!restaurant) {
-      deleteFile(req.file.path);
+      await deleteFile(req.file.filename);
       return res.status(404).json({
         success: false,
         message: 'Restaurant not found'
       });
     }
     
-    const imageUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+    const imageUrl = req.file.path;
+    const publicId = req.file.filename;
     
     if (imageType === 'profile') {
-      if (restaurant.images?.profileImage?.path) {
-        deleteFile(restaurant.images.profileImage.path);
+      if (restaurant.images?.profileImage?.publicId) {
+        await deleteFile(restaurant.images.profileImage.publicId);
       }
       
       restaurant.images = restaurant.images || {};
       restaurant.images.profileImage = {
-        filename: req.file.filename,
-        path: req.file.path,
+        publicId: publicId,
         url: imageUrl,
         uploadedAt: new Date()
       };
     } else if (imageType === 'cover') {
-      if (restaurant.images?.coverImage?.path) {
-        deleteFile(restaurant.images.coverImage.path);
+      if (restaurant.images?.coverImage?.publicId) {
+        await deleteFile(restaurant.images.coverImage.publicId);
       }
       
       restaurant.images = restaurant.images || {};
       restaurant.images.coverImage = {
-        filename: req.file.filename,
-        path: req.file.path,
+        publicId: publicId,
         url: imageUrl,
         uploadedAt: new Date()
       };
@@ -297,7 +287,7 @@ router.post('/restaurant/image', authMiddleware, vendorMiddleware, upload.single
     
   } catch (error) {
     console.error('Upload restaurant image error:', error);
-    if (req.file) deleteFile(req.file.path);
+    if (req.file?.filename) await deleteFile(req.file.filename);
     res.status(500).json({
       success: false,
       message: 'Failed to upload image',
@@ -308,37 +298,23 @@ router.post('/restaurant/image', authMiddleware, vendorMiddleware, upload.single
 
 // ===== ORDER MANAGEMENT =====
 
-// GET /api/vendors/orders - Get orders for vendor's restaurant
 router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
-    console.log('=== VENDOR ORDERS FETCH ===');
-    console.log('User ID:', req.user._id);
-    console.log('Query params:', req.query);
-
     const userId = req.user._id || req.user.id;
-    
     const restaurant = await Restaurant.findOne({ owner: userId });
     
     if (!restaurant) {
-      console.log('No restaurant found for vendor');
       return res.json({
         success: true,
         orders: [],
-        pagination: {
-          current: 1,
-          total: 0,
-          totalOrders: 0
-        }
+        pagination: { current: 1, total: 0, totalOrders: 0 }
       });
     }
-
-    console.log('Found restaurant:', restaurant.name);
 
     const { page = 1, limit = 20, status } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     let query = { restaurant: restaurant._id };
-    
     if (status && status !== 'all') {
       query.status = status.toLowerCase();
     }
@@ -346,17 +322,12 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
     const orders = await Order.find(query)
       .populate('customer', 'name email phone')
       .populate('restaurant', 'name address phone')
-      .populate({
-        path: 'driver',
-        populate: { path: 'user', select: 'name phone' }
-      })
+      .populate({ path: 'driver', populate: { path: 'user', select: 'name phone' } })
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
     const total = await Order.countDocuments(query);
-
-    console.log(`Returning ${orders.length} orders out of ${total} total`);
 
     res.json({
       success: true,
@@ -378,40 +349,20 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
   }
 });
 
-// PATCH /api/vendors/orders/:id/status - Update order status
 router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
-    console.log('=== ORDER STATUS UPDATE ===');
-    console.log('Order ID:', req.params.id);
-    console.log('New Status:', req.body.status);
-    console.log('User ID:', req.user._id);
-
     const { status } = req.body;
     const orderId = req.params.id;
 
     if (!status) {
-      return res.status(400).json({
-        success: false,
-        message: 'Status is required'
-      });
+      return res.status(400).json({ success: false, message: 'Status is required' });
     }
 
     if (!mongoose.isValidObjectId(orderId)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid order ID format'
-      });
+      return res.status(400).json({ success: false, message: 'Invalid order ID format' });
     }
 
-    const validStatuses = [
-      'pending', 
-      'confirmed', 
-      'preparing', 
-      'ready', 
-      'out_for_delivery', 
-      'delivered', 
-      'cancelled'
-    ];
+    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'cancelled'];
     
     if (!validStatuses.includes(status.toLowerCase())) {
       return res.status(400).json({
@@ -423,23 +374,11 @@ router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req,
     const order = await Order.findById(orderId);
     
     if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
+      return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    console.log('Found order:', {
-      id: order._id,
-      currentStatus: order.status,
-      restaurant: order.restaurant
-    });
-
     const userId = req.user._id || req.user.id;
-    const restaurant = await Restaurant.findOne({ 
-      _id: order.restaurant, 
-      owner: userId 
-    });
+    const restaurant = await Restaurant.findOne({ _id: order.restaurant, owner: userId });
 
     if (!restaurant) {
       return res.status(403).json({
@@ -448,12 +387,8 @@ router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req,
       });
     }
 
-    console.log('Ownership verified. Updating status...');
-
     order.status = status.toLowerCase();
     await order.save();
-
-    console.log(`Order ${orderId} status updated to ${status}`);
 
     res.json({
       success: true,
@@ -463,21 +398,6 @@ router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req,
 
   } catch (error) {
     console.error('Order status update error:', error);
-    
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({
-        success: false,
-        message: 'Validation error: ' + error.message
-      });
-    }
-    
-    if (error.name === 'CastError') {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid order ID format'
-      });
-    }
-
     res.status(500).json({
       success: false,
       message: 'Failed to update order status',
@@ -486,45 +406,27 @@ router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req,
   }
 });
 
-// POST /api/vendors/orders/:orderId/request-driver - Request driver for order
 router.post('/orders/:orderId/request-driver', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const { orderId } = req.params;
-    
-    console.log('Requesting driver for order:', orderId);
-    
     const order = await Order.findById(orderId);
     
     if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
+      return res.status(404).json({ success: false, message: 'Order not found' });
     }
     
-    const restaurant = await Restaurant.findOne({ 
-      _id: order.restaurant, 
-      owner: req.user._id 
-    });
+    const restaurant = await Restaurant.findOne({ _id: order.restaurant, owner: req.user._id });
     
     if (!restaurant) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized for this order'
-      });
+      return res.status(403).json({ success: false, message: 'Not authorized for this order' });
     }
     
     if (order.driver) {
-      return res.status(400).json({
-        success: false,
-        message: 'Driver already assigned to this order'
-      });
+      return res.status(400).json({ success: false, message: 'Driver already assigned to this order' });
     }
     
     order.status = 'ready';
     await order.save();
-    
-    console.log('Order marked as ready for driver pickup');
     
     res.json({
       success: true,
@@ -534,21 +436,14 @@ router.post('/orders/:orderId/request-driver', authMiddleware, vendorMiddleware,
     
   } catch (error) {
     console.error('Request driver error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error requesting driver',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error requesting driver', error: error.message });
   }
 });
 
 // ===== MENU MANAGEMENT =====
 
-// GET /api/vendors/menu - Get vendor's menu items
 router.get('/menu', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
-    console.log('Getting menu for user:', req.user._id);
-    
     let restaurant = await Restaurant.findOne({ owner: req.user._id });
     
     if (!restaurant) {
@@ -575,15 +470,10 @@ router.get('/menu', authMiddleware, vendorMiddleware, async (req, res) => {
     
   } catch (error) {
     console.error('Get menu error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error fetching menu items',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error fetching menu items', error: error.message });
   }
 });
 
-// POST /api/vendors/menu - Create menu item
 router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
   const contentType = req.get('Content-Type') || '';
   if (contentType.includes('multipart/form-data')) {
@@ -593,38 +483,24 @@ router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
   }
 }, async (req, res) => {
   try {
-    console.log('=== MENU ITEM CREATION ===');
-    console.log('User:', req.user._id);
-    console.log('Body:', req.body);
-    console.log('File:', req.file);
-    
     let restaurant = await Restaurant.findOne({ owner: req.user._id });
     
     if (!restaurant) {
-      if (req.file) deleteFile(req.file.path);
-      return res.status(400).json({
-        success: false,
-        message: 'Please create your restaurant profile first'
-      });
+      if (req.file?.filename) await deleteFile(req.file.filename);
+      return res.status(400).json({ success: false, message: 'Please create your restaurant profile first' });
     }
     
     const { name, description, price, category } = req.body;
     
     if (!name || !price) {
-      if (req.file) deleteFile(req.file.path);
-      return res.status(400).json({
-        success: false,
-        message: 'Name and price are required'
-      });
+      if (req.file?.filename) await deleteFile(req.file.filename);
+      return res.status(400).json({ success: false, message: 'Name and price are required' });
     }
     
     const parsedPrice = parseFloat(price);
     if (isNaN(parsedPrice) || parsedPrice <= 0) {
-      if (req.file) deleteFile(req.file.path);
-      return res.status(400).json({
-        success: false,
-        message: 'Price must be a valid positive number'
-      });
+      if (req.file?.filename) await deleteFile(req.file.filename);
+      return res.status(400).json({ success: false, message: 'Price must be a valid positive number' });
     }
     
     const menuItemData = {
@@ -643,17 +519,14 @@ router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
 
     if (req.file) {
       menuItemData.image = {
-        filename: req.file.filename,
-        path: req.file.path,
-        url: `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`,
+        publicId: req.file.filename,
+        url: req.file.path,
         uploadedAt: new Date()
       };
     }
     
     const menuItem = new MenuItem(menuItemData);
     await menuItem.save();
-    
-    console.log('Menu item created:', menuItem._id);
     
     res.status(201).json({
       success: true,
@@ -663,16 +536,11 @@ router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
     
   } catch (error) {
     console.error('Create menu item error:', error);
-    if (req.file) deleteFile(req.file.path);
-    res.status(500).json({
-      success: false,
-      message: 'Error creating menu item',
-      error: error.message
-    });
+    if (req.file?.filename) await deleteFile(req.file.filename);
+    res.status(500).json({ success: false, message: 'Error creating menu item', error: error.message });
   }
 });
 
-// PUT /api/vendors/menu/:id - Update menu item
 router.put('/menu/:id', authMiddleware, vendorMiddleware, (req, res, next) => {
   const contentType = req.get('Content-Type') || '';
   if (contentType.includes('multipart/form-data')) {
@@ -683,31 +551,22 @@ router.put('/menu/:id', authMiddleware, vendorMiddleware, (req, res, next) => {
 }, async (req, res) => {
   try {
     const { id } = req.params;
-    
     const menuItem = await MenuItem.findById(id).populate('restaurant');
     
     if (!menuItem) {
-      if (req.file) deleteFile(req.file.path);
-      return res.status(404).json({
-        success: false,
-        message: 'Menu item not found'
-      });
+      if (req.file?.filename) await deleteFile(req.file.filename);
+      return res.status(404).json({ success: false, message: 'Menu item not found' });
     }
     
     if (menuItem.restaurant.owner.toString() !== req.user._id.toString()) {
-      if (req.file) deleteFile(req.file.path);
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to update this menu item'
-      });
+      if (req.file?.filename) await deleteFile(req.file.filename);
+      return res.status(403).json({ success: false, message: 'Not authorized to update this menu item' });
     }
     
-    const oldImagePath = menuItem.image?.path;
+    const oldPublicId = menuItem.image?.publicId;
     
-    const updateFields = [
-      'name', 'description', 'price', 'category', 'isAvailable', 
-      'isVegetarian', 'isVegan', 'isGlutenFree', 'spiceLevel', 'preparationTime'
-    ];
+    const updateFields = ['name', 'description', 'price', 'category', 'isAvailable', 
+      'isVegetarian', 'isVegan', 'isGlutenFree', 'spiceLevel', 'preparationTime'];
     
     updateFields.forEach(field => {
       if (req.body[field] !== undefined) {
@@ -730,11 +589,10 @@ router.put('/menu/:id', authMiddleware, vendorMiddleware, (req, res, next) => {
     });
 
     if (req.file) {
-      if (oldImagePath) deleteFile(oldImagePath);
+      if (oldPublicId) await deleteFile(oldPublicId);
       menuItem.image = {
-        filename: req.file.filename,
-        path: req.file.path,
-        url: `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`,
+        publicId: req.file.filename,
+        url: req.file.path,
         uploadedAt: new Date()
       };
     }
@@ -749,58 +607,38 @@ router.put('/menu/:id', authMiddleware, vendorMiddleware, (req, res, next) => {
     
   } catch (error) {
     console.error('Update menu item error:', error);
-    if (req.file) deleteFile(req.file.path);
-    res.status(500).json({
-      success: false,
-      message: 'Error updating menu item',
-      error: error.message
-    });
+    if (req.file?.filename) await deleteFile(req.file.filename);
+    res.status(500).json({ success: false, message: 'Error updating menu item', error: error.message });
   }
 });
 
-// DELETE /api/vendors/menu/:id - Delete menu item
 router.delete('/menu/:id', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
-    
     const menuItem = await MenuItem.findById(id).populate('restaurant');
     
     if (!menuItem) {
-      return res.status(404).json({
-        success: false,
-        message: 'Menu item not found'
-      });
+      return res.status(404).json({ success: false, message: 'Menu item not found' });
     }
     
     if (menuItem.restaurant.owner.toString() !== req.user._id.toString()) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to delete this menu item'
-      });
+      return res.status(403).json({ success: false, message: 'Not authorized to delete this menu item' });
     }
 
-    if (menuItem.image && menuItem.image.path) {
-      deleteFile(menuItem.image.path);
+    if (menuItem.image?.publicId) {
+      await deleteFile(menuItem.image.publicId);
     }
     
     await MenuItem.findByIdAndDelete(id);
     
-    res.json({
-      success: true,
-      message: 'Menu item deleted successfully'
-    });
+    res.json({ success: true, message: 'Menu item deleted successfully' });
     
   } catch (error) {
     console.error('Delete menu item error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error deleting menu item',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error deleting menu item', error: error.message });
   }
 });
 
-// PATCH /api/vendors/menu/:id/availability - Toggle menu item availability
 router.patch('/menu/:id/availability', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
@@ -809,35 +647,21 @@ router.patch('/menu/:id/availability', authMiddleware, vendorMiddleware, async (
     const menuItem = await MenuItem.findById(id).populate('restaurant');
     
     if (!menuItem) {
-      return res.status(404).json({
-        success: false,
-        message: 'Menu item not found'
-      });
+      return res.status(404).json({ success: false, message: 'Menu item not found' });
     }
     
     if (menuItem.restaurant.owner.toString() !== req.user._id.toString()) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized'
-      });
+      return res.status(403).json({ success: false, message: 'Not authorized' });
     }
     
     menuItem.isAvailable = isAvailable;
     await menuItem.save();
     
-    res.json({
-      success: true,
-      message: 'Availability updated',
-      menuItem
-    });
+    res.json({ success: true, message: 'Availability updated', menuItem });
     
   } catch (error) {
     console.error('Toggle availability error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error updating availability',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Error updating availability', error: error.message });
   }
 });
 
@@ -845,26 +669,16 @@ router.patch('/menu/:id/availability', authMiddleware, vendorMiddleware, async (
 router.use((error, req, res, next) => {
   if (error instanceof multer.MulterError) {
     if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({
-        success: false,
-        message: 'File too large. Maximum size is 5MB.'
-      });
+      return res.status(400).json({ success: false, message: 'File too large. Maximum size is 5MB.' });
     }
   }
   
   if (error.message === 'Only image files are allowed!') {
-    return res.status(400).json({
-      success: false,
-      message: 'Only image files are allowed!'
-    });
+    return res.status(400).json({ success: false, message: 'Only image files are allowed!' });
   }
   
   console.error('Vendor route error:', error);
-  res.status(500).json({
-    success: false,
-    message: 'Internal server error',
-    error: error.message
-  });
+  res.status(500).json({ success: false, message: 'Internal server error', error: error.message });
 });
 
 module.exports = router;
