@@ -1,4 +1,4 @@
-﻿// routes/vendors.js - COMPLETE VERSION
+﻿// routes/vendors.js - COMPLETE VERSION WITH ROOT ROUTE
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -57,6 +57,32 @@ router.get('/test', (req, res) => {
     message: 'Vendors route is working!',
     timestamp: new Date().toISOString()
   });
+});
+
+// ===== ROOT ROUTE - GET ALL VENDORS =====
+router.get('/', async (req, res) => {
+  try {
+    console.log('Fetching all vendors/restaurants');
+    
+    const restaurants = await Restaurant.find({ status: 'active' })
+      .populate('owner', 'name email phone')
+      .select('name description cuisine deliveryFee minimumOrder rating images contact address')
+      .sort({ rating: -1 })
+      .limit(50);
+    
+    res.json({
+      success: true,
+      count: restaurants.length,
+      vendors: restaurants
+    });
+  } catch (error) {
+    console.error('Get vendors error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch vendors',
+      error: error.message
+    });
+  }
 });
 
 // ===== RESTAURANT MANAGEMENT =====
@@ -427,7 +453,7 @@ router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req,
     order.status = status.toLowerCase();
     await order.save();
 
-    console.log(`✅ Order ${orderId} status updated to ${status}`);
+    console.log(`Order ${orderId} status updated to ${status}`);
 
     res.json({
       success: true,
@@ -436,7 +462,7 @@ router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req,
     });
 
   } catch (error) {
-    console.error('❌ Order status update error:', error);
+    console.error('Order status update error:', error);
     
     if (error.name === 'ValidationError') {
       return res.status(400).json({
