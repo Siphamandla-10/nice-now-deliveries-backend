@@ -1,4 +1,4 @@
-// server.js - COMPLETE FIXED VERSION
+// server.js - COMPLETE VERSION WITH CLOUDINARY
 require('dotenv').config();
 
 const express = require('express');
@@ -129,15 +129,17 @@ const orderRoutes = require('./routes/orders');
 const paymentRoutes = require('./routes/payments');
 const vendorRoutes = require('./routes/vendors');
 const driverRoutes = require('./routes/drivers');
+const uploadRoutes = require('./routes/upload');  // NEW: Cloudinary routes
 
-// Register routes - THIS WAS THE MISSING PART
+// Register routes
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/restaurants', restaurantRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/vendors', vendorRoutes);
-app.use('/api/drivers', driverRoutes);  // THIS LINE WAS MISSING!
+app.use('/api/drivers', driverRoutes);
+app.use('/api/upload', uploadRoutes);  // NEW: Register upload routes
 
 // Serve static files
 const uploadsPath = path.join(__dirname, 'uploads');
@@ -149,6 +151,13 @@ app.get('/api/health', async (req, res) => {
     const dbState = mongoose.connection.readyState;
     const states = { 0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting' };
     
+    // Check Cloudinary configuration
+    const cloudinaryConfigured = !!(
+      process.env.CLOUDINARY_CLOUD_NAME && 
+      process.env.CLOUDINARY_API_KEY && 
+      process.env.CLOUDINARY_API_SECRET
+    );
+    
     res.json({ 
       status: 'ok', 
       timestamp: new Date().toISOString(),
@@ -157,6 +166,10 @@ app.get('/api/health', async (req, res) => {
         state: states[dbState],
         connected: dbState === 1,
         name: mongoose.connection.db?.databaseName
+      },
+      cloudinary: {
+        configured: cloudinaryConfigured,
+        cloudName: cloudinaryConfigured ? process.env.CLOUDINARY_CLOUD_NAME : 'not configured'
       },
       models: Object.keys(mongoose.models)
     });
@@ -179,7 +192,8 @@ app.get('/', (req, res) => {
       orders: '/api/orders',
       payments: '/api/payments',
       vendors: '/api/vendors',
-      drivers: '/api/drivers'
+      drivers: '/api/drivers',
+      upload: '/api/upload'
     }
   });
 });
@@ -210,8 +224,8 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server Running on 0.0.0.0:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Local: http://localhost:${PORT}`);
-  console.log(`Network: http://192.168.1.114:${PORT}`);
-  console.log(`API Base: http://192.168.1.114:${PORT}/api`);
+  console.log(`Network: http://192.168.1.116:${PORT}`);
+  console.log(`API Base: http://192.168.1.116:${PORT}/api`);
   console.log('');
   console.log('Available Routes:');
   console.log('  /api/auth       - Authentication');
@@ -220,7 +234,15 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('  /api/orders     - Order management');
   console.log('  /api/payments   - Payment processing');
   console.log('  /api/vendors    - Vendor operations');
-  console.log('  /api/drivers    - Driver operations ✓');
+  console.log('  /api/drivers    - Driver operations');
+  console.log('  /api/upload     - Image uploads (Cloudinary)');
+  console.log('');
+  const cloudinaryConfigured = !!(
+    process.env.CLOUDINARY_CLOUD_NAME && 
+    process.env.CLOUDINARY_API_KEY && 
+    process.env.CLOUDINARY_API_SECRET
+  );
+  console.log('Cloudinary: ' + (cloudinaryConfigured ? 'Configured' : 'Not configured'));
   console.log('================================================');
 });
 

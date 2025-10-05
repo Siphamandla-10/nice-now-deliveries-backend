@@ -27,7 +27,7 @@ router.get('/profile', authMiddleware, driverMiddleware, async (req, res) => {
   }
 });
 
-// Update driver status - FIXED
+// Update driver status
 router.put('/status', authMiddleware, driverMiddleware, async (req, res) => {
   try {
     const { status } = req.body;
@@ -59,7 +59,7 @@ router.put('/status', authMiddleware, driverMiddleware, async (req, res) => {
         location: {
           current: {
             type: 'Point',
-            coordinates: [28.0473, -26.2041] // Johannesburg [lng, lat]
+            coordinates: [28.0473, -26.2041]
           }
         }
       });
@@ -91,7 +91,7 @@ router.put('/status', authMiddleware, driverMiddleware, async (req, res) => {
   }
 });
 
-// Update driver location - FIXED coordinate order
+// Update driver location
 router.put('/location', authMiddleware, driverMiddleware, async (req, res) => {
   try {
     const { latitude, longitude } = req.body;
@@ -105,7 +105,6 @@ router.put('/location', authMiddleware, driverMiddleware, async (req, res) => {
       });
     }
     
-    // Validate coordinates
     const lat = parseFloat(latitude);
     const lng = parseFloat(longitude);
     
@@ -125,7 +124,6 @@ router.put('/location', authMiddleware, driverMiddleware, async (req, res) => {
       });
     }
     
-    // GeoJSON format: [longitude, latitude]
     driver.location.current.coordinates = [lng, lat];
     driver.location.lastUpdated = new Date();
     await driver.save();
@@ -165,7 +163,6 @@ router.get('/available-orders', authMiddleware, driverMiddleware, async (req, re
       ]
     };
     
-    // If location provided, find nearby orders
     if (lat && lng) {
       const latitude = parseFloat(lat);
       const longitude = parseFloat(lng);
@@ -203,7 +200,7 @@ router.get('/available-orders', authMiddleware, driverMiddleware, async (req, re
   }
 });
 
-// Accept order
+// Accept order - FIXED: Changed status from 'accepted' to 'confirmed'
 router.post('/accept-order/:orderId', authMiddleware, driverMiddleware, async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -233,18 +230,21 @@ router.post('/accept-order/:orderId', authMiddleware, driverMiddleware, async (r
       });
     }
     
-    // Update order
+    // Update order - FIXED: Use 'confirmed' instead of 'accepted'
     order.driver = driver._id;
-    order.status = 'accepted';
-    order.driverStatus = 'accepted';
-    order.acceptedAt = new Date();
+    order.status = 'confirmed'; // Changed from 'accepted' to match Order model enum
+    order.confirmedAt = new Date();
     await order.save();
+    
+    console.log('Order status set to confirmed');
     
     // Update driver status
     driver.status = 'busy';
     driver.isAvailable = false;
     driver.currentDelivery = order._id;
     await driver.save();
+    
+    console.log('Driver status updated to busy');
     
     const populatedOrder = await Order.findById(orderId)
       .populate('restaurant', 'name address phone')
@@ -313,7 +313,7 @@ router.get('/orders', authMiddleware, driverMiddleware, async (req, res) => {
   }
 });
 
-// Update order status
+// Update order status - FIXED: Updated valid statuses
 router.patch('/orders/:orderId/status', authMiddleware, driverMiddleware, async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -328,7 +328,8 @@ router.patch('/orders/:orderId/status', authMiddleware, driverMiddleware, async 
       });
     }
     
-    const validStatuses = ['accepted', 'picked_up', 'out_for_delivery', 'delivered'];
+    // Updated valid statuses to match Order model enum
+    const validStatuses = ['confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ 
         success: false, 
@@ -356,8 +357,16 @@ router.patch('/orders/:orderId/status', authMiddleware, driverMiddleware, async 
       });
     }
     
+    // Update order status
     order.status = status;
-    order.driverStatus = status;
+    
+    // Set appropriate timestamp based on status
+    if (status === 'confirmed') order.confirmedAt = new Date();
+    if (status === 'preparing') order.preparingAt = new Date();
+    if (status === 'ready') order.readyAt = new Date();
+    if (status === 'out_for_delivery') order.out_for_deliveryAt = new Date();
+    if (status === 'delivered') order.deliveredAt = new Date();
+    
     await order.save();
     
     // Update driver status based on order status
@@ -367,10 +376,11 @@ router.patch('/orders/:orderId/status', authMiddleware, driverMiddleware, async 
       driver.currentDelivery = null;
       driver.metrics.completedDeliveries += 1;
       driver.metrics.totalDeliveries += 1;
+      driver.metrics.totalEarnings += (order.driverEarning || 20);
       await driver.save();
     }
     
-    console.log('Order status updated successfully');
+    console.log('Order status updated successfully to:', status);
     
     res.json({ 
       success: true, 
@@ -491,21 +501,16 @@ router.get('/earnings', authMiddleware, driverMiddleware, async (req, res) => {
       driver: driver._id,
       status: 'delivered',
       deliveredAt: { $gte: today }
-    }).select('driverEarning pricing.deliveryFee');
+    }).select('driverEarning');
     
     const weekOrders = await Order.find({
       driver: driver._id,
       status: 'delivered',
       deliveredAt: { $gte: weekAgo }
-    }).select('driverEarning pricing.deliveryFee');
+    }).select('driverEarning');
     
-    const todayEarnings = todayOrders.reduce((sum, o) => 
-      sum + (o.driverEarning || o.pricing?.deliveryFee || 0), 0
-    );
-    
-    const weekEarnings = weekOrders.reduce((sum, o) => 
-      sum + (o.driverEarning || o.pricing?.deliveryFee || 0), 0
-    );
+    const todayEarnings = todayOrders.reduce((sum, o) => sum + (o.driverEarning || 0), 0);
+    const weekEarnings = weekOrders.reduce((sum, o) => sum + (o.driverEarning || 0), 0);
     
     res.json({
       success: true,
@@ -525,7 +530,7 @@ router.get('/earnings', authMiddleware, driverMiddleware, async (req, res) => {
   }
 });
 
-// Get active delivery
+// Get active delivery - FIXED: Updated status query to match Order model enum
 router.get('/active-delivery', authMiddleware, driverMiddleware, async (req, res) => {
   try {
     const driver = await Driver.findOne({ user: req.user._id });
@@ -534,9 +539,10 @@ router.get('/active-delivery', authMiddleware, driverMiddleware, async (req, res
       return res.json({ success: true, delivery: null });
     }
     
+    // Updated to use valid Order model statuses
     const activeOrder = await Order.findOne({
       driver: driver._id,
-      status: { $in: ['accepted', 'picked_up', 'out_for_delivery'] }
+      status: { $in: ['confirmed', 'preparing', 'ready', 'out_for_delivery'] }
     })
     .populate('restaurant', 'name address phone')
     .populate('customer', 'name phone address');

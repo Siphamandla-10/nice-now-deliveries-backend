@@ -1,4 +1,4 @@
-// models/Restaurant.js - Complete merged version
+// models/Restaurant.js - Fixed with proper GeoJSON structure
 const mongoose = require('mongoose');
 
 const restaurantSchema = new mongoose.Schema({
@@ -85,7 +85,7 @@ const restaurantSchema = new mongoose.Schema({
     }
   },
   
-  // Address
+  // Address with proper GeoJSON format
   address: {
     street: {
       type: String,
@@ -107,14 +107,16 @@ const restaurantSchema = new mongoose.Schema({
       default: '0000',
       trim: true
     },
-    coordinates: {
-      latitude: {
-        type: Number,
-        default: 0
+    // GeoJSON format for geospatial queries
+    location: {
+      type: {
+        type: String,
+        enum: ['Point'],
+        default: 'Point'
       },
-      longitude: {
-        type: Number,
-        default: 0
+      coordinates: {
+        type: [Number],
+        default: [0, 0] // [longitude, latitude]
       }
     }
   },
@@ -224,11 +226,11 @@ const restaurantSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// Indexes
+// Indexes - Updated for GeoJSON
 restaurantSchema.index({ owner: 1 });
 restaurantSchema.index({ isActive: 1, status: 1 });
 restaurantSchema.index({ cuisine: 1, isActive: 1 });
-restaurantSchema.index({ 'address.coordinates': '2dsphere' });
+restaurantSchema.index({ 'address.location': '2dsphere' });
 
 // Virtual: full address
 restaurantSchema.virtual('fullAddress').get(function () {

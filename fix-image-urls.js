@@ -1,11 +1,9 @@
-// fix-image-urls.js - CORRECTED
+
 require('dotenv').config();
 const mongoose = require('mongoose');
-
 const MONGO_URI = process.env.MONGO_URI;
-const OLD_IP = '192.168.0.126';  // Changed from 192.168.0.26
-const NEW_IP = '192.168.1.114';
-
+const OLD_IP = '192.168.1.114';  // or whatever old IP was in the DB
+const NEW_IP = '192.168.1.116';
 async function fixImageUrls() {
   try {
     console.log('🔗 Connecting to MongoDB...');

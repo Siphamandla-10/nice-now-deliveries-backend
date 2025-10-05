@@ -1,4 +1,4 @@
-// models/MenuItem.js - Enhanced with proper image support like Restaurant model
+// models/MenuItem.js - Enhanced with Cloudinary support
 const mongoose = require('mongoose');
 
 const menuItemSchema = new mongoose.Schema({
@@ -37,18 +37,20 @@ const menuItemSchema = new mongoose.Schema({
     min: [0, 'Price cannot be negative']
   },
   
-  // Enhanced image structure (similar to Restaurant model)
+  // Enhanced image structure with Cloudinary support
   images: {
     mainImage: {
       filename: { type: String, default: '' },
       path: { type: String, default: '' },
       url: { type: String, default: '' },
+      cloudinaryId: { type: String, default: '' }, // ← NEW: Store Cloudinary public_id
       uploadedAt: { type: Date }
     },
     gallery: [{
       filename: { type: String, required: true },
       path: { type: String, required: true },
       url: { type: String, required: true },
+      cloudinaryId: { type: String, default: '' }, // ← NEW: Store Cloudinary public_id
       caption: { type: String, default: '' },
       uploadedAt: { type: Date, default: Date.now }
     }]
@@ -59,6 +61,7 @@ const menuItemSchema = new mongoose.Schema({
     filename: String,
     path: String,
     url: String,
+    cloudinaryId: String, // ← NEW: Cloudinary public_id
     uploadedAt: Date
   },
   
@@ -177,7 +180,7 @@ menuItemSchema.index({ featured: 1, restaurant: 1 });
 menuItemSchema.index({ 'specialOffer.isActive': 1, 'specialOffer.endDate': 1 });
 menuItemSchema.index({ tags: 1 });
 
-// Virtual: Get main image URL (similar to Restaurant model)
+// Virtual: Get main image URL
 menuItemSchema.virtual('mainImageUrl').get(function () {
   if (this.images?.mainImage?.url) {
     return this.images.mainImage.url;
@@ -233,24 +236,26 @@ menuItemSchema.virtual('isActuallyAvailable').get(function() {
   return true;
 });
 
-// Method: Update main image (similar to Restaurant model)
+// Method: Update main image with Cloudinary support
 menuItemSchema.methods.updateMainImage = function (imageData) {
   if (!this.images) {
     this.images = {};
   }
   
   this.images.mainImage = {
-    filename: imageData.filename,
-    path: imageData.path,
+    filename: imageData.filename || '',
+    path: imageData.path || '',
     url: imageData.url,
+    cloudinaryId: imageData.cloudinaryId || imageData.publicId || '', // Support both field names
     uploadedAt: new Date()
   };
   
   // Update legacy field for backward compatibility
   this.image = {
-    filename: imageData.filename,
-    path: imageData.path,
+    filename: imageData.filename || '',
+    path: imageData.path || '',
     url: imageData.url,
+    cloudinaryId: imageData.cloudinaryId || imageData.publicId || '',
     uploadedAt: new Date()
   };
   
@@ -267,9 +272,10 @@ menuItemSchema.methods.addToGallery = function (imageData) {
   }
   
   this.images.gallery.push({
-    filename: imageData.filename,
-    path: imageData.path,
+    filename: imageData.filename || '',
+    path: imageData.path || '',
     url: imageData.url,
+    cloudinaryId: imageData.cloudinaryId || imageData.publicId || '',
     caption: imageData.caption || '',
     uploadedAt: new Date()
   });
@@ -277,13 +283,64 @@ menuItemSchema.methods.addToGallery = function (imageData) {
   return this.save();
 };
 
-// Method: Remove image from gallery
-menuItemSchema.methods.removeFromGallery = function (imageId) {
-  if (!this.images?.gallery) return Promise.resolve(this);
+// Method: Remove image from gallery (with Cloudinary cleanup)
+menuItemSchema.methods.removeFromGallery = async function (imageId) {
+  if (!this.images?.gallery) return this;
+  
+  // Find the image to get its cloudinaryId before removing
+  const imageToRemove = this.images.gallery.find(
+    img => img._id.toString() === imageId.toString()
+  );
+  
+  if (imageToRemove && imageToRemove.cloudinaryId) {
+    // Delete from Cloudinary
+    try {
+      const { deleteImage } = require('../config/cloudinary');
+      await deleteImage(imageToRemove.cloudinaryId);
+    } catch (error) {
+      console.error('Error deleting image from Cloudinary:', error);
+      // Continue with database removal even if Cloudinary deletion fails
+    }
+  }
   
   this.images.gallery = this.images.gallery.filter(
     img => img._id.toString() !== imageId.toString()
   );
+  
+  return this.save();
+};
+
+// Method: Delete main image from Cloudinary
+menuItemSchema.methods.deleteMainImage = async function () {
+  const cloudinaryId = this.images?.mainImage?.cloudinaryId || this.image?.cloudinaryId;
+  
+  if (cloudinaryId) {
+    try {
+      const { deleteImage } = require('../config/cloudinary');
+      await deleteImage(cloudinaryId);
+    } catch (error) {
+      console.error('Error deleting main image from Cloudinary:', error);
+    }
+  }
+  
+  // Clear image data
+  if (this.images?.mainImage) {
+    this.images.mainImage = {
+      filename: '',
+      path: '',
+      url: '',
+      cloudinaryId: '',
+      uploadedAt: null
+    };
+  }
+  
+  this.image = {
+    filename: '',
+    path: '',
+    url: '',
+    cloudinaryId: '',
+    uploadedAt: null
+  };
   
   return this.save();
 };
@@ -428,6 +485,32 @@ menuItemSchema.pre('save', function(next) {
   }
   
   next();
+});
+
+// Pre-remove middleware to cleanup Cloudinary images
+menuItemSchema.pre('remove', async function(next) {
+  try {
+    const { deleteImage } = require('../config/cloudinary');
+    
+    // Delete main image
+    if (this.images?.mainImage?.cloudinaryId) {
+      await deleteImage(this.images.mainImage.cloudinaryId);
+    }
+    
+    // Delete gallery images
+    if (this.images?.gallery?.length > 0) {
+      for (const img of this.images.gallery) {
+        if (img.cloudinaryId) {
+          await deleteImage(img.cloudinaryId);
+        }
+      }
+    }
+    
+    next();
+  } catch (error) {
+    console.error('Error cleaning up Cloudinary images:', error);
+    next(); // Continue even if cleanup fails
+  }
 });
 
 // Pre-find middleware to automatically populate restaurant for some queries
