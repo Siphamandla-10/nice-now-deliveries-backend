@@ -1,4 +1,4 @@
-﻿// routes/vendors.js - COMPLETE VERSION WITH CLOUDINARY - FIXED
+﻿// routes/vendors.js - COMPLETE VERSION WITH COMPREHENSIVE DEBUGGING
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -61,6 +61,86 @@ router.get('/test', (req, res) => {
     message: 'Vendors route is working!',
     timestamp: new Date().toISOString()
   });
+});
+
+// ===== DEBUG ROUTE - Shows what's in the database =====
+router.get('/debug/orders', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    console.log('\n=== DEBUG: CHECKING DATABASE ===');
+    const userId = req.user._id || req.user.id;
+    console.log('Vendor User ID:', userId);
+    
+    // Find vendor's restaurant
+    const restaurant = await Restaurant.findOne({ owner: userId });
+    console.log('Vendor Restaurant:', restaurant ? {
+      _id: restaurant._id,
+      name: restaurant.name,
+      owner: restaurant.owner
+    } : 'NO RESTAURANT');
+
+    // Get total orders in database
+    const totalOrders = await Order.countDocuments({});
+    console.log('Total orders in database:', totalOrders);
+
+    // Get sample orders
+    const sampleOrders = await Order.find({}).limit(3);
+    console.log('Sample orders:', sampleOrders.map(o => ({
+      _id: o._id,
+      orderNumber: o.orderNumber,
+      restaurant: o.restaurant,
+      vendor: o.vendor,
+      status: o.status
+    })));
+
+    // Check how many orders match by restaurant ID
+    if (restaurant) {
+      const byRestaurantId = await Order.countDocuments({ restaurant: restaurant._id });
+      console.log(`Orders with restaurant ${restaurant._id}:`, byRestaurantId);
+      
+      const byRestaurantIdString = await Order.countDocuments({ 
+        restaurant: restaurant._id.toString() 
+      });
+      console.log(`Orders with restaurant ${restaurant._id.toString()} (string):`, byRestaurantIdString);
+    }
+
+    // Check by vendor field
+    const byVendorId = await Order.countDocuments({ vendor: userId });
+    console.log(`Orders with vendor ${userId}:`, byVendorId);
+
+    // Get all unique restaurant IDs in orders
+    const uniqueRestaurants = await Order.distinct('restaurant');
+    console.log('Unique restaurant IDs in orders:', uniqueRestaurants);
+
+    // Get all unique vendor IDs in orders
+    const uniqueVendors = await Order.distinct('vendor');
+    console.log('Unique vendor IDs in orders:', uniqueVendors);
+
+    console.log('=== END DEBUG ===\n');
+
+    res.json({
+      success: true,
+      debug: {
+        vendorUserId: userId.toString(),
+        restaurantId: restaurant?._id?.toString() || null,
+        restaurantName: restaurant?.name || null,
+        totalOrdersInDB: totalOrders,
+        ordersWithThisRestaurant: restaurant ? 
+          await Order.countDocuments({ restaurant: restaurant._id }) : 0,
+        ordersWithThisVendor: await Order.countDocuments({ vendor: userId }),
+        uniqueRestaurantsInOrders: uniqueRestaurants.map(r => r.toString()),
+        uniqueVendorsInOrders: uniqueVendors.map(v => v ? v.toString() : 'null'),
+        sampleOrders: sampleOrders.map(o => ({
+          orderNumber: o.orderNumber,
+          restaurant: o.restaurant?.toString() || o.restaurant,
+          vendor: o.vendor?.toString() || o.vendor,
+          status: o.status
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('Debug error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // ===== ROOT ROUTE - GET ALL VENDORS =====
@@ -296,38 +376,145 @@ router.post('/restaurant/image', authMiddleware, vendorMiddleware, upload.single
   }
 });
 
-// ===== ORDER MANAGEMENT =====
+// ===== ORDER MANAGEMENT - SUPER FIXED VERSION WITH ALL DEBUGGING =====
 
 router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
-    const userId = req.user._id || req.user.id;
-    const restaurant = await Restaurant.findOne({ owner: userId });
+    console.log('\n========================================');
+    console.log('=== VENDOR ORDERS - COMPREHENSIVE DEBUG ===');
+    console.log('========================================');
     
-    if (!restaurant) {
+    const userId = req.user._id || req.user.id;
+    console.log('1. Vendor User ID:', userId);
+    console.log('   Type:', typeof userId);
+    console.log('   As String:', userId.toString());
+
+    // Find restaurant owned by this vendor
+    const restaurant = await Restaurant.findOne({ owner: userId });
+    console.log('\n2. Restaurant Lookup:');
+    if (restaurant) {
+      console.log('   ✓ Restaurant Found');
+      console.log('   Restaurant ID:', restaurant._id);
+      console.log('   Restaurant Name:', restaurant.name);
+      console.log('   Owner ID:', restaurant.owner);
+      console.log('   Owner matches?', restaurant.owner.toString() === userId.toString());
+    } else {
+      console.log('   ✗ NO RESTAURANT FOUND');
       return res.json({
         success: true,
         orders: [],
-        pagination: { current: 1, total: 0, totalOrders: 0 }
+        pagination: { current: 1, total: 0, totalOrders: 0 },
+        debug: { message: 'No restaurant found for this vendor' }
       });
     }
 
+    console.log('\n3. Database Order Analysis:');
+    const totalOrders = await Order.countDocuments({});
+    console.log('   Total orders in DB:', totalOrders);
+
+    // Try multiple query approaches
+    const approachResults = [];
+
+    // Approach 1: Match by restaurant ObjectId
+    const count1 = await Order.countDocuments({ restaurant: restaurant._id });
+    console.log('   Approach 1 (restaurant ObjectId):', count1, 'orders');
+    approachResults.push({ approach: 'restaurant ObjectId', count: count1 });
+
+    // Approach 2: Match by restaurant string
+    const count2 = await Order.countDocuments({ restaurant: restaurant._id.toString() });
+    console.log('   Approach 2 (restaurant string):', count2, 'orders');
+    approachResults.push({ approach: 'restaurant string', count: count2 });
+
+    // Approach 3: Match by vendor field
+    const count3 = await Order.countDocuments({ vendor: userId });
+    console.log('   Approach 3 (vendor ObjectId):', count3, 'orders');
+    approachResults.push({ approach: 'vendor ObjectId', count: count3 });
+
+    // Approach 4: Match by vendor string
+    const count4 = await Order.countDocuments({ vendor: userId.toString() });
+    console.log('   Approach 4 (vendor string):', count4, 'orders');
+    approachResults.push({ approach: 'vendor string', count: count4 });
+
+    // Get sample orders to inspect structure
+    console.log('\n4. Sample Order Inspection:');
+    const sampleOrders = await Order.find({}).limit(3);
+    sampleOrders.forEach((order, idx) => {
+      console.log(`   Sample Order ${idx + 1}:`);
+      console.log('      Order ID:', order._id);
+      console.log('      Order Number:', order.orderNumber);
+      console.log('      Restaurant field:', order.restaurant);
+      console.log('      Restaurant type:', typeof order.restaurant);
+      console.log('      Vendor field:', order.vendor);
+      console.log('      Vendor type:', typeof order.vendor);
+      console.log('      Status:', order.status);
+      
+      // Check if this order matches
+      const restaurantMatch = order.restaurant && order.restaurant.toString() === restaurant._id.toString();
+      const vendorMatch = order.vendor && order.vendor.toString() === userId.toString();
+      console.log('      Matches restaurant?', restaurantMatch);
+      console.log('      Matches vendor?', vendorMatch);
+    });
+
+    // Get all unique restaurant IDs
+    console.log('\n5. All Restaurant IDs in Orders:');
+    const uniqueRestaurants = await Order.distinct('restaurant');
+    uniqueRestaurants.forEach(restId => {
+      const matches = restId && restId.toString() === restaurant._id.toString();
+      console.log(`      ${restId} ${matches ? '← MATCH!' : ''}`);
+    });
+
+    // Get all unique vendor IDs
+    console.log('\n6. All Vendor IDs in Orders:');
+    const uniqueVendors = await Order.distinct('vendor');
+    uniqueVendors.forEach(vendId => {
+      if (vendId) {
+        const matches = vendId.toString() === userId.toString();
+        console.log(`      ${vendId} ${matches ? '← MATCH!' : ''}`);
+      } else {
+        console.log('      null (no vendor set)');
+      }
+    });
+
+    // Build the query - USE VENDOR FIELD (the one that actually works!)
+    console.log('\n7. Building Final Query:');
     const { page = 1, limit = 20, status } = req.query;
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    let query = { restaurant: restaurant._id };
+    // Simply query by vendor ID - this is what links orders to this vendor
+    let query = { vendor: userId };
+
     if (status && status !== 'all') {
       query.status = status.toLowerCase();
     }
 
+    console.log('   Query:', JSON.stringify(query, null, 2));
+
+    // Execute query
+    console.log('\n8. Executing Query:');
     const orders = await Order.find(query)
       .populate('customer', 'name email phone')
-      .populate('restaurant', 'name address phone')
+      .populate('restaurant', 'name address phone image profileImageUrl')
       .populate('driver', 'name phone email')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
 
     const total = await Order.countDocuments(query);
+
+    console.log('   ✓ Query executed');
+    console.log('   Orders found:', orders.length);
+    console.log('   Total matching orders:', total);
+
+    if (orders.length > 0) {
+      console.log('\n9. First Order Details:');
+      console.log('   Order Number:', orders[0].orderNumber);
+      console.log('   Status:', orders[0].status);
+      console.log('   Total:', orders[0].total);
+    }
+
+    console.log('\n========================================');
+    console.log('=== END DEBUG ===');
+    console.log('========================================\n');
 
     res.json({
       success: true,
@@ -336,7 +523,14 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
         current: parseInt(page),
         total: Math.ceil(total / parseInt(limit)),
         totalOrders: total
-      }
+      },
+      debug: process.env.NODE_ENV === 'development' ? {
+        restaurantId: restaurant._id.toString(),
+        restaurantName: restaurant.name,
+        totalOrdersInDB: totalOrders,
+        approachResults,
+        queryUsed: query
+      } : undefined
     });
 
   } catch (error) {

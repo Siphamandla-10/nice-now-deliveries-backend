@@ -1,12 +1,12 @@
-// routes/orders.js - Complete Enhanced Version with Test Route
+// routes/orders.js - Enhanced with Customer & Items Display
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const { authMiddleware } = require('../middleware/auth');
 const Order = require('../models/Order');
-const Restaurant = require('../models/Restaurant'); // Add this if you have it
+const Restaurant = require('../models/Restaurant');
 
-// Test route to verify enhanced routes are loaded
+// Test route
 router.get('/test-debug', (req, res) => {
   console.log('ENHANCED ROUTES LOADED SUCCESSFULLY');
   res.json({ message: 'Enhanced debug routes are working!', timestamp: new Date() });
@@ -20,13 +20,12 @@ const generateOrderNumber = () => {
   return `ORD-${dateStr}-${randomNum}`;
 };
 
-// GET /api/orders/my-orders - Get user's orders (WITH COMPREHENSIVE DEBUG LOGGING)
+// GET /api/orders/my-orders - Get user's orders with full customer and items info
 router.get('/my-orders', authMiddleware, async (req, res) => {
   console.log('=== GET MY ORDERS DEBUG ===');
   console.log('Request received for /my-orders');
   
   try {
-    // Log user info
     console.log('User info:', {
       id: req.user._id || req.user.id,
       name: req.user.name,
@@ -37,9 +36,6 @@ router.get('/my-orders', authMiddleware, async (req, res) => {
     const { page = 1, limit = 20, status } = req.query;
     const skip = (page - 1) * limit;
     
-    console.log('Query params:', { page, limit, status, skip });
-
-    // Build query
     const userId = req.user._id || req.user.id;
     const query = { customer: userId };
     
@@ -48,45 +44,25 @@ router.get('/my-orders', authMiddleware, async (req, res) => {
     }
     
     console.log('Database query:', JSON.stringify(query, null, 2));
-    console.log('Looking for orders with customer ID:', userId);
 
-    // First, check if any orders exist at all
-    const totalOrdersInDB = await Order.countDocuments({});
-    console.log('Total orders in database:', totalOrdersInDB);
-    
-    // Check orders for this specific user
-    const userOrderCount = await Order.countDocuments(query);
-    console.log('Orders for this customer:', userOrderCount);
-
-    // If no orders for user, let's see what customer IDs exist
-    if (userOrderCount === 0) {
-      console.log('No orders found for this customer');
-      
-      // Check what customer IDs exist in the database
-      const existingCustomerIds = await Order.distinct('customer');
-      console.log('Existing customer IDs in orders:', existingCustomerIds);
-      
-      // Check if any orders have this user ID as string vs ObjectId
-      const userIdString = userId.toString();
-      const alternativeQuery = { customer: userIdString };
-      const altCount = await Order.countDocuments(alternativeQuery);
-      console.log('Alternative query result (string ID):', altCount);
-      
-      // Try to find orders with ObjectId conversion
-      try {
-        const objectIdQuery = { customer: new mongoose.Types.ObjectId(userId) };
-        const objectIdCount = await Order.countDocuments(objectIdQuery);
-        console.log('ObjectId query result:', objectIdCount);
-      } catch (objIdError) {
-        console.log('ObjectId conversion failed:', objIdError.message);
-      }
-    }
-
-    // Fetch the orders
-    console.log('Executing main query...');
+    // Fetch orders with FULL customer and items information
     const orders = await Order.find(query)
-      .populate('restaurant', 'name address phone')
-      .populate('customer', 'name email phone')
+      .populate({
+        path: 'restaurant',
+        select: 'name address phone image coverImage'
+      })
+      .populate({
+        path: 'customer',
+        select: 'name email phone profilePicture addresses'
+      })
+      .populate({
+        path: 'driver',
+        select: 'name phone'
+      })
+      .populate({
+        path: 'items.menuItem',
+        select: 'name description price image category'
+      })
       .sort({ createdAt: -1 })
       .limit(parseInt(limit))
       .skip(skip);
@@ -94,24 +70,53 @@ router.get('/my-orders', authMiddleware, async (req, res) => {
     console.log('Query executed successfully');
     console.log('Found orders:', orders.length);
     
-    if (orders.length > 0) {
-      console.log('Sample order:', {
-        id: orders[0]._id,
-        orderNumber: orders[0].orderNumber,
-        status: orders[0].status,
-        total: orders[0].total,
-        restaurant: orders[0].restaurant?.name,
-        createdAt: orders[0].createdAt,
-        customer: orders[0].customer
-      });
-    }
+    // Enhance the orders with formatted data
+    const enhancedOrders = orders.map(order => {
+      const orderObj = order.toObject();
+      
+      // Format customer info
+      orderObj.customerInfo = {
+        id: orderObj.customer._id,
+        name: orderObj.customer.name,
+        email: orderObj.customer.email,
+        phone: orderObj.customer.phone,
+        profilePicture: orderObj.customer.profilePicture?.url || null
+      };
+      
+      // Format items with details
+      orderObj.itemsDetails = orderObj.items.map(item => ({
+        name: item.name,
+        quantity: item.quantity,
+        price: item.price,
+        itemTotal: item.itemTotal || (item.price * item.quantity),
+        specialInstructions: item.specialInstructions || null,
+        menuItemDetails: item.menuItem ? {
+          id: item.menuItem._id,
+          name: item.menuItem.name,
+          description: item.menuItem.description,
+          category: item.menuItem.category,
+          image: item.menuItem.image?.url || null
+        } : null
+      }));
+      
+      // Add order summary
+      orderObj.orderSummary = {
+        itemCount: orderObj.items.length,
+        totalItems: orderObj.items.reduce((sum, item) => sum + item.quantity, 0),
+        subtotal: orderObj.subtotal,
+        deliveryFee: orderObj.deliveryFee,
+        tax: orderObj.tax,
+        total: orderObj.total
+      };
+      
+      return orderObj;
+    });
 
     const total = await Order.countDocuments(query);
-    console.log('Total matching orders:', total);
 
     const response = {
       success: true,
-      orders,
+      orders: enhancedOrders,
       pagination: {
         current: parseInt(page),
         total: Math.ceil(total / limit),
@@ -119,18 +124,13 @@ router.get('/my-orders', authMiddleware, async (req, res) => {
       }
     };
 
-    console.log('Sending response with', orders.length, 'orders');
+    console.log('Sending response with', enhancedOrders.length, 'orders');
     console.log('==========================');
     
     res.json(response);
 
   } catch (error) {
     console.error('GET MY ORDERS ERROR:', error);
-    console.error('Error name:', error.name);
-    console.error('Error message:', error.message);
-    console.error('Error stack:', error.stack);
-    console.log('==========================');
-    
     res.status(500).json({
       success: false,
       message: 'Failed to fetch orders',
@@ -139,23 +139,133 @@ router.get('/my-orders', authMiddleware, async (req, res) => {
   }
 });
 
+// GET /api/orders - Get all orders (for vendors and drivers) WITH CUSTOMER & ITEMS
+router.get('/', authMiddleware, async (req, res) => {
+  try {
+    console.log('Getting all orders for user type:', req.user.userType);
+    
+    const { status, page = 1, limit = 20 } = req.query;
+    const skip = (page - 1) * limit;
+
+    let query = {};
+    
+    // Filter by user role
+    if (req.user.userType === 'vendor') {
+      try {
+        const restaurants = await Restaurant.find({ owner: req.user._id }).select('_id');
+        query.restaurant = { $in: restaurants.map(r => r._id) };
+      } catch (error) {
+        query.vendor = req.user._id;
+      }
+    } else if (req.user.userType === 'customer') {
+      query.customer = req.user._id;
+    } else if (req.user.userType === 'driver') {
+      query.driver = req.user._id;
+    }
+
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+
+    console.log('Query:', JSON.stringify(query, null, 2));
+
+    // Fetch with FULL population
+    const orders = await Order.find(query)
+      .populate({
+        path: 'restaurant',
+        select: 'name address phone image coverImage cuisine'
+      })
+      .populate({
+        path: 'customer',
+        select: 'name email phone profilePicture'
+      })
+      .populate({
+        path: 'driver',
+        select: 'name email phone'
+      })
+      .populate({
+        path: 'items.menuItem',
+        select: 'name description price image category'
+      })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip(skip);
+
+    // Enhance orders with formatted customer and items data
+    const enhancedOrders = orders.map(order => {
+      const orderObj = order.toObject();
+      
+      // Customer details
+      if (orderObj.customer) {
+        orderObj.customerDetails = {
+          id: orderObj.customer._id,
+          name: orderObj.customer.name,
+          email: orderObj.customer.email,
+          phone: orderObj.customer.phone || orderObj.customerPhone,
+          profilePicture: orderObj.customer.profilePicture?.url || null
+        };
+      }
+      
+      // Items with full details
+      orderObj.itemsList = orderObj.items.map(item => ({
+        itemId: item._id,
+        name: item.name,
+        quantity: item.quantity,
+        unitPrice: item.price,
+        totalPrice: item.itemTotal || (item.price * item.quantity),
+        specialInstructions: item.specialInstructions,
+        menuItem: item.menuItem ? {
+          id: item.menuItem._id,
+          name: item.menuItem.name,
+          description: item.menuItem.description,
+          category: item.menuItem.category,
+          image: item.menuItem.image?.url || null
+        } : null
+      }));
+      
+      // Order totals
+      orderObj.totals = {
+        itemCount: orderObj.items.length,
+        totalQuantity: orderObj.items.reduce((sum, item) => sum + item.quantity, 0),
+        subtotal: orderObj.subtotal,
+        deliveryFee: orderObj.deliveryFee,
+        tax: orderObj.tax,
+        grandTotal: orderObj.total
+      };
+      
+      return orderObj;
+    });
+
+    const total = await Order.countDocuments(query);
+
+    console.log('Found', enhancedOrders.length, 'orders with customer & items');
+
+    res.json({
+      success: true,
+      orders: enhancedOrders,
+      pagination: {
+        current: parseInt(page),
+        total: Math.ceil(total / limit),
+        hasMore: skip + orders.length < total
+      }
+    });
+  } catch (error) {
+    console.error('Get orders error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch orders', 
+      error: error.message 
+    });
+  }
+});
+
 // POST /api/orders - Create new order
 router.post('/', authMiddleware, async (req, res) => {
   console.log('=== ORDER CREATION DEBUG ===');
-  console.log('Order creation attempt started');
-  console.log('User from middleware:', {
-    id: req.user._id || req.user.id,
-    name: req.user.name,
-    email: req.user.email,
-    userType: req.user.userType
-  });
-  console.log('Order data received:', JSON.stringify(req.body, null, 2));
-  console.log('============================');
-
+  
   try {
     const { restaurantId, items, deliveryAddress, paymentMethod, notes } = req.body;
     
-    // Validate required fields
     if (!restaurantId || !items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({
         success: false,
@@ -163,7 +273,6 @@ router.post('/', authMiddleware, async (req, res) => {
       });
     }
 
-    // Ensure user is customer
     if (req.user.userType !== 'customer') {
       return res.status(403).json({
         success: false,
@@ -171,9 +280,6 @@ router.post('/', authMiddleware, async (req, res) => {
       });
     }
 
-    console.log('User is customer, creating order...');
-
-    // Get restaurant info (if Restaurant model exists)
     let restaurant;
     try {
       restaurant = await Restaurant.findById(restaurantId);
@@ -184,35 +290,34 @@ router.post('/', authMiddleware, async (req, res) => {
         });
       }
     } catch (error) {
-      console.warn('Restaurant model not found, using basic data');
-      // Create mock restaurant data
       restaurant = {
         _id: restaurantId,
         name: req.body.restaurantName || 'Restaurant',
-        owner: req.body.vendor || restaurantId
+        owner: req.body.vendor || restaurantId,
+        deliveryFee: 2.99
       };
     }
 
-    // Calculate totals
     const subtotal = items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
     const deliveryFee = restaurant.deliveryFee || 2.99;
-    const tax = Math.round(subtotal * 0.10 * 100) / 100; // 10% tax
+    const tax = Math.round(subtotal * 0.10 * 100) / 100;
     const total = subtotal + deliveryFee + tax;
 
-    // Prepare order data
     const orderData = {
       orderNumber: generateOrderNumber(),
       customer: req.user._id || req.user.id,
+      customerName: req.user.name,
+      customerPhone: req.user.phone,
       restaurant: restaurantId,
       vendor: restaurant.owner,
       
-      // Fix items structure
       items: items.map(item => ({
-        name: item.name, // Make sure name is included
+        name: item.name,
         menuItem: item.menuItemId,
         quantity: item.quantity,
         price: item.price,
-        itemTotal: item.price * item.quantity
+        itemTotal: item.price * item.quantity,
+        specialInstructions: item.specialInstructions || ''
       })),
       
       subtotal: subtotal,
@@ -220,44 +325,32 @@ router.post('/', authMiddleware, async (req, res) => {
       tax: tax,
       total: total,
       
-      // Fix delivery address with default coordinates
       deliveryAddress: {
         street: deliveryAddress?.street || 'Default Street',
         city: deliveryAddress?.city || 'Default City', 
         state: deliveryAddress?.state || 'Default State',
         zipCode: deliveryAddress?.zipCode || '00000',
         coordinates: {
-          latitude: deliveryAddress?.coordinates?.latitude || -26.2041, // Johannesburg default
+          latitude: deliveryAddress?.coordinates?.latitude || -26.2041,
           longitude: deliveryAddress?.coordinates?.longitude || 28.0473
         }
       },
       
-      // Fix payment method
-      payment: {
-        method: paymentMethod || 'card',
-        status: 'pending'
-      },
-      
-      customerPhone: req.user.phone,
+      paymentMethod: paymentMethod || 'card',
+      paymentStatus: 'pending',
       notes: notes || '',
       specialInstructions: req.body.specialInstructions || '',
-      status: 'pending',
-      paymentStatus: 'pending'
+      status: 'pending'
     };
 
-    console.log('Final order data:', JSON.stringify(orderData, null, 2));
-    console.log('Order model created, attempting to save...');
-
-    // Create and save order
     const order = new Order(orderData);
     const savedOrder = await order.save();
 
-    console.log('Order saved successfully:', savedOrder._id);
-
-    // Populate the order for response
+    // Populate with customer and items details
     const populatedOrder = await Order.findById(savedOrder._id)
-      .populate('customer', 'name email phone')
-      .populate('restaurant', 'name address phone');
+      .populate('customer', 'name email phone profilePicture')
+      .populate('restaurant', 'name address phone')
+      .populate('items.menuItem', 'name description price image category');
 
     res.status(201).json({
       success: true,
@@ -289,15 +382,28 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/orders/:id - Get order by ID
+// GET /api/orders/:id - Get order by ID WITH FULL DETAILS
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
     console.log('Getting order by ID:', req.params.id);
     
     const order = await Order.findById(req.params.id)
-      .populate('restaurant', 'name address phone')
-      .populate('customer', 'name email phone')
-      .populate('driver', 'name phone');
+      .populate({
+        path: 'restaurant',
+        select: 'name address phone image coverImage cuisine'
+      })
+      .populate({
+        path: 'customer',
+        select: 'name email phone profilePicture addresses'
+      })
+      .populate({
+        path: 'driver',
+        select: 'name phone'
+      })
+      .populate({
+        path: 'items.menuItem',
+        select: 'name description price image category'
+      });
 
     if (!order) {
       return res.status(404).json({
@@ -306,7 +412,7 @@ router.get('/:id', authMiddleware, async (req, res) => {
       });
     }
 
-    // Check if user owns this order or is the driver/restaurant
+    // Check access permissions
     const userId = req.user._id || req.user.id;
     const canAccess = order.customer._id.toString() === userId.toString() ||
                      order.driver?._id.toString() === userId.toString() ||
@@ -319,11 +425,38 @@ router.get('/:id', authMiddleware, async (req, res) => {
       });
     }
 
-    console.log('Order found and access granted');
+    // Enhance order with formatted data
+    const orderObj = order.toObject();
+    
+    orderObj.customerInfo = {
+      id: orderObj.customer._id,
+      name: orderObj.customer.name,
+      email: orderObj.customer.email,
+      phone: orderObj.customer.phone,
+      profilePicture: orderObj.customer.profilePicture?.url || null
+    };
+    
+    orderObj.itemsDetails = orderObj.items.map(item => ({
+      name: item.name,
+      quantity: item.quantity,
+      unitPrice: item.price,
+      totalPrice: item.itemTotal || (item.price * item.quantity),
+      specialInstructions: item.specialInstructions,
+      menuItem: item.menuItem ? {
+        id: item.menuItem._id,
+        name: item.menuItem.name,
+        description: item.menuItem.description,
+        category: item.menuItem.category,
+        image: item.menuItem.image?.url || null
+      } : null
+    }));
+    
+    console.log('Order found with customer:', orderObj.customerInfo.name);
+    console.log('Total items:', orderObj.items.length);
     
     res.json({
       success: true,
-      order
+      order: orderObj
     });
   } catch (error) {
     console.error('Get order error:', error);
@@ -340,9 +473,7 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
     const { status } = req.body;
     const orderId = req.params.id;
 
-    console.log('Updating order status:', orderId, 'to', status);
-
-    const validStatuses = ['pending', 'confirmed', 'accepted', 'picked_up', 'on_route', 'delivered', 'completed', 'cancelled'];
+    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'completed', 'cancelled'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -350,7 +481,10 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
       });
     }
 
-    const order = await Order.findById(orderId);
+    const order = await Order.findById(orderId)
+      .populate('customer', 'name email phone')
+      .populate('items.menuItem', 'name price');
+      
     if (!order) {
       return res.status(404).json({
         success: false,
@@ -358,13 +492,11 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
       });
     }
 
-    // Update status with timestamp
     order.status = status;
     order[`${status}At`] = new Date();
-
     await order.save();
 
-    console.log('Order status updated successfully');
+    console.log('Order status updated for customer:', order.customer.name);
 
     res.json({
       success: true,
@@ -380,19 +512,19 @@ router.patch('/:id/status', authMiddleware, async (req, res) => {
   }
 });
 
-// POST /api/orders/:orderId/request-driver - Request driver for order
+// POST /api/orders/:orderId/request-driver
 router.post('/:orderId/request-driver', authMiddleware, async (req, res) => {
   try {
     const { orderId } = req.params;
-    console.log('Vendor requesting driver for order:', orderId);
     
-    // Find the order
-    const order = await Order.findById(orderId);
+    const order = await Order.findById(orderId)
+      .populate('customer', 'name phone')
+      .populate('items.menuItem', 'name');
+      
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
     
-    // Verify the vendor owns this order's restaurant
     let restaurant;
     try {
       restaurant = await Restaurant.findOne({ 
@@ -400,10 +532,8 @@ router.post('/:orderId/request-driver', authMiddleware, async (req, res) => {
         owner: req.user._id 
       });
     } catch (error) {
-      console.log('Restaurant model not found, checking vendor field');
-      // If no Restaurant model, check vendor field directly
       if (order.vendor && order.vendor.toString() === req.user._id.toString()) {
-        restaurant = { _id: order.restaurant }; // Mock restaurant object
+        restaurant = { _id: order.restaurant };
       }
     }
     
@@ -414,7 +544,6 @@ router.post('/:orderId/request-driver', authMiddleware, async (req, res) => {
       });
     }
     
-    // Check if order is in correct status
     if (!['pending', 'confirmed', 'preparing', 'ready'].includes(order.status)) {
       return res.status(400).json({
         success: false,
@@ -422,17 +551,16 @@ router.post('/:orderId/request-driver', authMiddleware, async (req, res) => {
       });
     }
     
-    // Update order status to ready (so drivers can see it)
     order.status = 'ready';
     order.driverRequested = true;
     order.driverRequestedAt = new Date();
     await order.save();
     
-    console.log('Driver requested for order', orderId, '- marked as ready');
+    console.log('Driver requested for order from customer:', order.customer.name);
     
     res.json({
       success: true,
-      message: 'Driver requested successfully. Order is now available for drivers to accept.',
+      message: 'Driver requested successfully',
       order: order
     });
     
@@ -446,97 +574,38 @@ router.post('/:orderId/request-driver', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/orders - Get all orders (for vendors and drivers)
-router.get('/', authMiddleware, async (req, res) => {
-  try {
-    console.log('Getting all orders for user type:', req.user.userType);
-    
-    const { status, page = 1, limit = 20 } = req.query;
-    const skip = (page - 1) * limit;
-
-    let query = {};
-    
-    // Filter by user role
-    if (req.user.userType === 'vendor') {
-      try {
-        const restaurants = await Restaurant.find({ owner: req.user._id }).select('_id');
-        query.restaurant = { $in: restaurants.map(r => r._id) };
-        console.log('Vendor query - restaurants:', restaurants.length);
-      } catch (error) {
-        // If no Restaurant model, use vendor field
-        query.vendor = req.user._id;
-        console.log('Using vendor field fallback');
-      }
-    } else if (req.user.userType === 'customer') {
-      query.customer = req.user._id;
-    } else if (req.user.userType === 'driver') {
-      query.driver = req.user._id;
-    }
-
-    if (status && status !== 'all') {
-      query.status = status;
-    }
-
-    console.log('Final query:', JSON.stringify(query, null, 2));
-
-    const orders = await Order.find(query)
-      .populate('restaurant', 'name address phone')
-      .populate('customer', 'name email phone')
-      .populate('driver', 'name email phone')
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
-      .skip(skip);
-
-    const total = await Order.countDocuments(query);
-
-    console.log('Found', orders.length, 'orders out of', total, 'total');
-
-    res.json({
-      success: true,
-      orders,
-      pagination: {
-        current: parseInt(page),
-        total: Math.ceil(total / limit),
-        hasMore: skip + orders.length < total
-      }
-    });
-  } catch (error) {
-    console.error('Get orders error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to fetch orders', 
-      error: error.message 
-    });
-  }
-});
-
-// Additional debug route to check all orders in database
+// Debug route to check all orders
 router.get('/debug/all', authMiddleware, async (req, res) => {
   try {
-    console.log('DEBUG: Getting all orders in database');
+    const allOrders = await Order.find({})
+      .populate('customer', 'name email phone')
+      .populate('items.menuItem', 'name price')
+      .select('_id customer orderNumber status total items createdAt');
     
-    const allOrders = await Order.find({}).select('_id customer orderNumber status total createdAt');
-    
-    console.log('Total orders in DB:', allOrders.length);
-    
-    const ordersByCustomer = {};
-    allOrders.forEach(order => {
-      const customerId = order.customer.toString();
-      if (!ordersByCustomer[customerId]) {
-        ordersByCustomer[customerId] = [];
-      }
-      ordersByCustomer[customerId].push({
-        id: order._id,
-        orderNumber: order.orderNumber,
-        status: order.status,
-        total: order.total
-      });
-    });
+    const ordersWithDetails = allOrders.map(order => ({
+      id: order._id,
+      orderNumber: order.orderNumber,
+      status: order.status,
+      total: order.total,
+      customer: {
+        id: order.customer._id,
+        name: order.customer.name,
+        email: order.customer.email,
+        phone: order.customer.phone
+      },
+      items: order.items.map(item => ({
+        name: item.name,
+        quantity: item.quantity,
+        price: item.price
+      })),
+      itemCount: order.items.length,
+      createdAt: order.createdAt
+    }));
     
     res.json({
       success: true,
       totalOrders: allOrders.length,
-      ordersByCustomer: ordersByCustomer,
+      orders: ordersWithDetails,
       currentUserId: req.user._id || req.user.id
     });
   } catch (error) {
