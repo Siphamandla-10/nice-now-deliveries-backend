@@ -1,4 +1,4 @@
-﻿// routes/vendors.js - COMPLETE VERSION WITH CLOUDINARY
+﻿// routes/vendors.js - COMPLETE VERSION WITH CLOUDINARY - FIXED
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -322,7 +322,7 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
     const orders = await Order.find(query)
       .populate('customer', 'name email phone')
       .populate('restaurant', 'name address phone')
-      .populate({ path: 'driver', populate: { path: 'user', select: 'name phone' } })
+      .populate('driver', 'name phone email')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
