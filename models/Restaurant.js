@@ -1,4 +1,4 @@
-// models/Restaurant.js - Fixed with proper GeoJSON structure
+// models/Restaurant.js - Fixed with proper GeoJSON structure and Cloudinary support
 const mongoose = require('mongoose');
 
 const restaurantSchema = new mongoose.Schema({
@@ -368,6 +368,43 @@ restaurantSchema.methods.updateCoverImage = function (imageData) {
   this.coverImage = imageData.url;
   
   return this.save();
+};
+
+// Method: Get API response with proper image structure
+// This ensures Cloudinary images are properly returned in API responses
+restaurantSchema.methods.toAPIResponse = function() {
+  const obj = this.toObject();
+  
+  // Ensure images object exists with proper structure
+  if (!obj.images) {
+    obj.images = {
+      profileImage: {},
+      coverImage: {},
+      gallery: []
+    };
+  }
+  
+  // Populate images.coverImage if it's empty but legacy coverImage field exists
+  if ((!obj.images.coverImage?.url || obj.images.coverImage.url === '') && obj.coverImage) {
+    obj.images.coverImage = {
+      url: obj.coverImage,
+      path: obj.coverImage,
+      filename: obj.coverImage.split('/').pop(),
+      uploadedAt: obj.images.coverImage?.uploadedAt || obj.updatedAt
+    };
+  }
+  
+  // Populate images.profileImage if it's empty but legacy image field exists  
+  if ((!obj.images.profileImage?.url || obj.images.profileImage.url === '') && obj.image) {
+    obj.images.profileImage = {
+      url: obj.image,
+      path: obj.image,
+      filename: obj.image.split('/').pop(),
+      uploadedAt: obj.images.profileImage?.uploadedAt || obj.updatedAt
+    };
+  }
+  
+  return obj;
 };
 
 module.exports = mongoose.model('Restaurant', restaurantSchema);

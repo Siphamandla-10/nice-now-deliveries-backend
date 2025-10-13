@@ -1,4 +1,4 @@
-// server.js - COMPLETE VERSION WITH CLOUDINARY
+// server.js - COMPLETE VERSION WITH CLOUDINARY AND DYNAMIC IP
 require('dotenv').config();
 
 const express = require('express');
@@ -8,9 +8,24 @@ const http = require('http');
 const socketIo = require('socket.io');
 const path = require('path');
 const fs = require('fs');
+const os = require('os'); // Added for dynamic IP detection
 
 const app = express();
 const server = http.createServer(app);
+
+// Function to get local network IP
+const getLocalIP = () => {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      // Skip internal (loopback) and non-IPv4 addresses
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return 'localhost';
+};
 
 // CORS configuration
 const corsOptions = {
@@ -21,13 +36,12 @@ const corsOptions = {
       "http://localhost:3000",
       "http://localhost:8081",
       "http://localhost:19006",
-      "http://192.168.1.114:8081",
-      "http://192.168.1.114:19006",
-      "http://192.168.1.114:3000",
-      "http://192.168.0.126:8081",
-      "http://192.168.0.126:19006",
-      "http://192.168.0.26:8081",
-      "http://192.168.0.26:19006",
+      "http://192.168.0.129:8081",      // Your actual IP
+      "http://192.168.0.129:19006",     // Your actual IP
+      "http://192.168.0.129:3000",      // Your actual IP
+      "http://192.168.1.116:8081",      // Keep old IP for reference
+      "http://192.168.1.116:19006",
+      "http://192.168.1.116:3000",
       "capacitor://localhost",
       "ionic://localhost",
     ];
@@ -129,7 +143,7 @@ const orderRoutes = require('./routes/orders');
 const paymentRoutes = require('./routes/payments');
 const vendorRoutes = require('./routes/vendors');
 const driverRoutes = require('./routes/drivers');
-const uploadRoutes = require('./routes/upload');  // NEW: Cloudinary routes
+const uploadRoutes = require('./routes/upload');  // Cloudinary routes
 
 // Register routes
 app.use('/api/auth', authRoutes);
@@ -139,7 +153,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/vendors', vendorRoutes);
 app.use('/api/drivers', driverRoutes);
-app.use('/api/upload', uploadRoutes);  // NEW: Register upload routes
+app.use('/api/upload', uploadRoutes);
 
 // Serve static files
 const uploadsPath = path.join(__dirname, 'uploads');
@@ -171,7 +185,8 @@ app.get('/api/health', async (req, res) => {
         configured: cloudinaryConfigured,
         cloudName: cloudinaryConfigured ? process.env.CLOUDINARY_CLOUD_NAME : 'not configured'
       },
-      models: Object.keys(mongoose.models)
+      models: Object.keys(mongoose.models),
+      serverIP: getLocalIP() // Added server IP to health check
     });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
@@ -184,6 +199,7 @@ app.get('/', (req, res) => {
     message: 'Nice Now Deliveries API',
     version: '1.0.0',
     status: 'running',
+    serverIP: getLocalIP(), // Added server IP info
     endpoints: {
       health: '/api/health',
       auth: '/api/auth',
@@ -220,12 +236,14 @@ app.use((error, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, '0.0.0.0', () => {
+  const localIP = getLocalIP(); // Get dynamic IP
+  
   console.log('================================================');
   console.log(`Server Running on 0.0.0.0:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Local: http://localhost:${PORT}`);
-  console.log(`Network: http://192.168.1.116:${PORT}`);
-  console.log(`API Base: http://192.168.1.116:${PORT}/api`);
+  console.log(`Network: http://${localIP}:${PORT}`); // Dynamic IP
+  console.log(`API Base: http://${localIP}:${PORT}/api`); // Dynamic IP
   console.log('');
   console.log('Available Routes:');
   console.log('  /api/auth       - Authentication');
@@ -244,6 +262,7 @@ server.listen(PORT, '0.0.0.0', () => {
   );
   console.log('Cloudinary: ' + (cloudinaryConfigured ? 'Configured' : 'Not configured'));
   console.log('================================================');
+  console.log(`\n📱 Update your app to use: http://${localIP}:${PORT}/api\n`); // Helpful reminder
 });
 
 module.exports = app;

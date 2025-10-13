@@ -1,4 +1,4 @@
-// routes/restaurants.js - Updated for new coordinate structure
+// routes/restaurants.js - FIXED for Cloudinary
 const express = require('express');
 const router = express.Router();
 const Restaurant = require('../models/Restaurant');
@@ -32,7 +32,7 @@ router.get('/', async (req, res) => {
             type: 'Point',
             coordinates: [longitude, latitude]
           },
-          $maxDistance: radiusInKm * 1000 // Convert km to meters
+          $maxDistance: radiusInKm * 1000
         }
       };
     }
@@ -43,10 +43,42 @@ router.get('/', async (req, res) => {
       .limit(50);
    
     console.log(`Found ${restaurants.length} restaurants`);
+    
+    // Process each restaurant
+    const processedRestaurants = restaurants.map(restaurant => {
+      const obj = restaurant.toObject();
+      
+      // Ensure images object exists
+      if (!obj.images) {
+        obj.images = { profileImage: {}, coverImage: {}, gallery: [] };
+      }
+      
+      // FIX: If images.coverImage.url is empty, populate from coverImage field
+      if ((!obj.images.coverImage?.url || obj.images.coverImage.url === '') && obj.coverImage) {
+        obj.images.coverImage = {
+          url: obj.coverImage,
+          path: obj.coverImage,
+          filename: obj.coverImage.split('/').pop()
+        };
+      }
+      
+      // FIX: If images.profileImage.url is empty, populate from image field  
+      if ((!obj.images.profileImage?.url || obj.images.profileImage.url === '') && obj.image) {
+        obj.images.profileImage = {
+          url: obj.image,
+          path: obj.image,
+          filename: obj.image.split('/').pop()
+        };
+      }
+      
+      console.log(`✅ ${obj.name} - coverImage: ${obj.images.coverImage?.url?.substring(0, 50)}...`);
+      
+      return obj;
+    });
    
     res.json({
       success: true,
-      restaurants: restaurants
+      restaurants: processedRestaurants
     });
    
   } catch (error) {
@@ -74,10 +106,37 @@ router.get('/:id', async (req, res) => {
         message: 'Restaurant not found'
       });
     }
+    
+    const obj = restaurant.toObject();
+      
+    // Ensure images object exists
+    if (!obj.images) {
+      obj.images = { profileImage: {}, coverImage: {}, gallery: [] };
+    }
+    
+    // FIX: populate images.coverImage from coverImage field
+    if ((!obj.images.coverImage?.url || obj.images.coverImage.url === '') && obj.coverImage) {
+      obj.images.coverImage = {
+        url: obj.coverImage,
+        path: obj.coverImage,
+        filename: obj.coverImage.split('/').pop()
+      };
+    }
+    
+    // FIX: populate images.profileImage from image field  
+    if ((!obj.images.profileImage?.url || obj.images.profileImage.url === '') && obj.image) {
+      obj.images.profileImage = {
+        url: obj.image,
+        path: obj.image,
+        filename: obj.image.split('/').pop()
+      };
+    }
+    
+    console.log(`✅ Returning ${obj.name} with coverImage: ${obj.images.coverImage?.url}`);
    
     res.json({
       success: true,
-      restaurant: restaurant
+      restaurant: obj
     });
    
   } catch (error) {
@@ -90,7 +149,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// GET /api/restaurants/:id/menu - Get restaurant menu
+// GET /api/restaurants/:id/menu
 router.get('/:id/menu', async (req, res) => {
   try {
     const { id } = req.params;
