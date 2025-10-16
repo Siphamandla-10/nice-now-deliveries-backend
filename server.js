@@ -32,16 +32,24 @@ const corsOptions = {
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
     
+    const localIP = getLocalIP(); // Get current IP dynamically
+    
     const allowedOrigins = [
       "http://localhost:3000",
       "http://localhost:8081",
       "http://localhost:19006",
-      "http://192.168.0.129:8081",      // Your actual IP
-      "http://192.168.0.129:19006",     // Your actual IP
-      "http://192.168.0.129:3000",      // Your actual IP
-      "http://192.168.1.116:8081",      // Keep old IP for reference
-      "http://192.168.1.116:19006",
-      "http://192.168.1.116:3000",
+      `http://${localIP}:8081`,       // Dynamic current IP
+      `http://${localIP}:19006`,      // Dynamic current IP
+      `http://${localIP}:3000`,       // Dynamic current IP
+      "http://192.168.1.150:8081",    // Current IP
+      "http://192.168.1.150:19006",   // Current IP
+      "http://192.168.1.150:3000",    // Current IP
+      "http://192.168.0.129:8081",    // Old IP (keep for reference)
+      "http://192.168.0.129:19006",   // Old IP
+      "http://192.168.0.129:3000",    // Old IP
+      "http://192.168.1.116:8081",    // Old IP
+      "http://192.168.1.116:19006",   // Old IP
+      "http://192.168.1.116:3000",    // Old IP
       "capacitor://localhost",
       "ionic://localhost",
     ];

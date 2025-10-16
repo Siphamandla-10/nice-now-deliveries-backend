@@ -1,12 +1,47 @@
-// models/Restaurant.js - Fixed with proper GeoJSON structure and Cloudinary support
+// models/Restaurant.js - Fixed with proper GeoJSON structure, Cloudinary support, and Auto-Discovery
 const mongoose = require('mongoose');
 
 const restaurantSchema = new mongoose.Schema({
+  // UPDATED: Owner is now optional for auto-discovered restaurants
   owner: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: [true, 'Restaurant owner is required'],
-    unique: true
+    required: false,  // Changed from true to support auto-discovery
+    default: null,
+    sparse: true  // Only enforce uniqueness when owner exists
+  },
+  
+  // NEW: Track source of restaurant data
+  source: {
+    type: String,
+    enum: ['manual', 'vendor_signup', 'openstreetmap', 'google_places'],
+    default: 'manual'
+  },
+  
+  // NEW: External IDs for discovered restaurants
+  osmId: {
+    type: String,
+    default: null,
+    sparse: true,
+    index: true
+  },
+  
+  placeId: {
+    type: String,
+    default: null,
+    sparse: true,
+    index: true
+  },
+  
+  // NEW: Discovery metadata
+  discoveredAt: {
+    type: Date,
+    default: null
+  },
+  
+  lastVerified: {
+    type: Date,
+    default: null
   },
   
   name: {
@@ -82,6 +117,10 @@ const restaurantSchema = new mongoose.Schema({
     email: {
       type: String,
       default: ''
+    },
+    website: {
+      type: String,
+      default: ''
     }
   },
   
@@ -102,12 +141,22 @@ const restaurantSchema = new mongoose.Schema({
       default: 'State',
       trim: true
     },
+    region: {
+      type: String,
+      default: '',
+      trim: true
+    },
     zipCode: {
       type: String,
       default: '0000',
       trim: true
     },
-    // GeoJSON format for geospatial queries
+    country: {
+      type: String,
+      default: 'South Africa',
+      trim: true
+    },
+    // GeoJSON format for geospatial queries (MongoDB 2dsphere)
     location: {
       type: {
         type: String,
@@ -121,24 +170,41 @@ const restaurantSchema = new mongoose.Schema({
     }
   },
   
-  // Images - Updated structure
+  // NEW: Alternative location format for compatibility with discovery
+  // This supports the latitude/longitude object format
+  location: {
+    type: {
+      type: String,
+      enum: ['Point'],
+      default: 'Point'
+    },
+    coordinates: {
+      latitude: { type: Number, default: null },
+      longitude: { type: Number, default: null }
+    }
+  },
+  
+  // Images - Updated structure with Cloudinary support
   images: {
     profileImage: {
       filename: { type: String, default: '' },
       path: { type: String, default: '' },
       url: { type: String, default: '' },
+      publicId: { type: String, default: '' },
       uploadedAt: { type: Date }
     },
     coverImage: {
       filename: { type: String, default: '' },
       path: { type: String, default: '' },
       url: { type: String, default: '' },
+      publicId: { type: String, default: '' },
       uploadedAt: { type: Date }
     },
     gallery: [{
       filename: { type: String, required: true },
       path: { type: String, required: true },
       url: { type: String, required: true },
+      publicId: { type: String, default: '' },
       caption: { type: String, default: '' },
       uploadedAt: { type: Date, default: Date.now }
     }]
@@ -226,11 +292,16 @@ const restaurantSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// Indexes - Updated for GeoJSON
+// Indexes - Updated for GeoJSON and discovery
 restaurantSchema.index({ owner: 1 });
 restaurantSchema.index({ isActive: 1, status: 1 });
 restaurantSchema.index({ cuisine: 1, isActive: 1 });
 restaurantSchema.index({ 'address.location': '2dsphere' });
+restaurantSchema.index({ 'location.coordinates.latitude': 1, 'location.coordinates.longitude': 1 });
+restaurantSchema.index({ source: 1 });
+restaurantSchema.index({ osmId: 1 });
+restaurantSchema.index({ placeId: 1 });
+restaurantSchema.index({ name: 'text', description: 'text' });
 
 // Virtual: full address
 restaurantSchema.virtual('fullAddress').get(function () {
@@ -251,6 +322,46 @@ restaurantSchema.virtual('coverImageUrl').get(function () {
     return this.images.coverImage.url;
   }
   return this.coverImage || '/images/default-cover.png';
+});
+
+// Pre-save middleware
+restaurantSchema.pre('save', function(next) {
+  // Auto-generate description if not provided
+  if (!this.description || this.description === 'Welcome to our restaurant') {
+    if (this.name && this.cuisine) {
+      this.description = `${this.name} - ${this.cuisine} restaurant`;
+      if (this.address?.city) {
+        this.description += ` in ${this.address.city}`;
+      }
+    }
+  }
+  
+  // Sync location formats (keep both for compatibility)
+  if (this.location?.coordinates?.latitude && this.location?.coordinates?.longitude) {
+    // Sync to address.location (GeoJSON [lng, lat] format)
+    if (!this.address.location) {
+      this.address.location = {
+        type: 'Point',
+        coordinates: [0, 0]
+      };
+    }
+    this.address.location.coordinates = [
+      this.location.coordinates.longitude,
+      this.location.coordinates.latitude
+    ];
+  } else if (this.address?.location?.coordinates?.length === 2) {
+    // Sync from address.location to location
+    if (!this.location) {
+      this.location = {
+        type: 'Point',
+        coordinates: {}
+      };
+    }
+    this.location.coordinates.longitude = this.address.location.coordinates[0];
+    this.location.coordinates.latitude = this.address.location.coordinates[1];
+  }
+  
+  next();
 });
 
 // Method: check if restaurant is open now
@@ -314,6 +425,7 @@ restaurantSchema.methods.addToGallery = function (imageData) {
     filename: imageData.filename,
     path: imageData.path,
     url: imageData.url,
+    publicId: imageData.publicId || '',
     caption: imageData.caption || '',
     uploadedAt: new Date()
   });
@@ -342,6 +454,7 @@ restaurantSchema.methods.updateProfileImage = function (imageData) {
     filename: imageData.filename,
     path: imageData.path,
     url: imageData.url,
+    publicId: imageData.publicId || '',
     uploadedAt: new Date()
   };
   
@@ -361,6 +474,7 @@ restaurantSchema.methods.updateCoverImage = function (imageData) {
     filename: imageData.filename,
     path: imageData.path,
     url: imageData.url,
+    publicId: imageData.publicId || '',
     uploadedAt: new Date()
   };
   
@@ -405,6 +519,36 @@ restaurantSchema.methods.toAPIResponse = function() {
   }
   
   return obj;
+};
+
+// Static method: Find nearby restaurants
+restaurantSchema.statics.findNearby = function(latitude, longitude, radiusKm = 10) {
+  return this.find({
+    isActive: true,
+    'location.coordinates.latitude': {
+      $gte: latitude - (radiusKm / 111),
+      $lte: latitude + (radiusKm / 111)
+    },
+    'location.coordinates.longitude': {
+      $gte: longitude - (radiusKm / (111 * Math.cos(latitude * Math.PI / 180))),
+      $lte: longitude + (radiusKm / (111 * Math.cos(latitude * Math.PI / 180)))
+    }
+  });
+};
+
+// Static method: Find by owner
+restaurantSchema.statics.findByOwner = function(ownerId) {
+  return this.findOne({ owner: ownerId });
+};
+
+// Static method: Find discovered restaurants
+restaurantSchema.statics.findDiscovered = function(source = 'openstreetmap') {
+  return this.find({ source, status: 'pending_approval' });
+};
+
+// Static method: Find restaurants needing approval
+restaurantSchema.statics.findPendingApproval = function() {
+  return this.find({ status: 'pending_approval' });
 };
 
 module.exports = mongoose.model('Restaurant', restaurantSchema);

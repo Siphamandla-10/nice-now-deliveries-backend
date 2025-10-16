@@ -1,3 +1,4 @@
+// middleware/auth.js - COMPLETE FIXED VERSION
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
@@ -23,7 +24,7 @@ try {
 }
 
 // ============================
-// GENERAL AUTH MIDDLEWARE - MAIN EXPORT
+// GENERAL AUTH MIDDLEWARE - MAIN EXPORT - FIXED
 // ============================
 async function authMiddleware(req, res, next) {
   try {
@@ -53,7 +54,8 @@ async function authMiddleware(req, res, next) {
       });
     }
 
-    const user = await User.findById(decoded.id).select('-password').populate('driverProfile');
+    // FIXED: Removed .populate('driverProfile') - was causing StrictPopulateError
+    const user = await User.findById(decoded.id).select('-password');
     if (!user) {
       return res.status(401).json({ 
         success: false, 
@@ -80,7 +82,7 @@ async function authMiddleware(req, res, next) {
 }
 
 // ============================
-// LOGIN ROUTE HELPER
+// LOGIN ROUTE HELPER - FIXED
 // ============================
 async function loginUser(req, res) {
   try {
@@ -92,7 +94,8 @@ async function loginUser(req, res) {
       });
     }
 
-    const user = await User.findOne({ email: email.trim().toLowerCase() }).populate('driverProfile');
+    // FIXED: Removed .populate('driverProfile') - was causing StrictPopulateError
+    const user = await User.findOne({ email: email.trim().toLowerCase() });
     if (!user) {
       return res.status(401).json({ 
         success: false, 
