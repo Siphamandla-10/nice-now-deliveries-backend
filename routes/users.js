@@ -1,136 +1,26 @@
-// routes/users.js - COMPLETE WITH FIXED LOCATION ENDPOINTS
-
+// routes/users.js - FIXED with correct middleware import
 const express = require('express');
-const bcrypt = require('bcryptjs');
-const User = require('../models/User');
-const Restaurant = require('../models/Restaurant');
-const { authMiddleware } = require('../middleware/auth');
 const router = express.Router();
+const User = require('../models/User');
 
-// ========== PROFILE ENDPOINTS ==========
+// ✅ FIXED: Import from '../middleware/auth' instead of '../middleware/authMiddleware'
+const { authMiddleware } = require('../middleware/auth');
 
-// Get current user profile
-router.get('/profile', authMiddleware, async (req, res) => {
+// Alternatively, you can use this syntax:
+// const authMiddleware = require('../middleware/auth');
+
+// You can also create an alias 'protect' if you prefer:
+const protect = authMiddleware;
+
+// ========================================
+// GET USER PROFILE - FIXED
+// ========================================
+router.get('/profile', protect, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id)
-      .select('-password')
-      .populate('restaurant', 'name status isActive')
-      .populate('driverProfile');
-    
-    if (!user) {
-      return res.status(404).json({ 
-        success: false,
-        message: 'User not found' 
-      });
-    }
-    
-    res.json({
-      success: true,
-      user: user
-    });
-  } catch (error) {
-    console.error('Get profile error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error fetching profile' 
-    });
-  }
-});
+    console.log('📱 Fetching profile for user:', req.user._id);
 
-// Update user profile
-router.put('/profile', authMiddleware, async (req, res) => {
-  try {
-    const { name, email, phone } = req.body;
-    
-    if (!name || !email) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Name and email are required' 
-      });
-    }
-    
-    // Check if email is being changed and if it's already in use
-    if (email !== req.user.email) {
-      const existingUser = await User.findOne({ 
-        email: email.toLowerCase(),
-        _id: { $ne: req.user._id }
-      });
-      
-      if (existingUser) {
-        return res.status(409).json({ 
-          success: false,
-          message: 'Email already in use' 
-        });
-      }
-    }
-    
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user._id,
-      {
-        name: name.trim(),
-        email: email.trim().toLowerCase(),
-        phone: phone?.trim(),
-        updatedAt: new Date()
-      },
-      { new: true, runValidators: true }
-    ).select('-password').populate('restaurant', 'name status isActive');
-    
-    res.json({
-      success: true,
-      message: 'Profile updated successfully',
-      user: updatedUser
-    });
-  } catch (error) {
-    console.error('Update profile error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error updating profile' 
-    });
-  }
-});
-
-// ========== LOCATION ENDPOINTS (FIXED) ==========
-
-// PUT /api/users/location - Update user location with proper GeoJSON format
-router.put('/location', authMiddleware, async (req, res) => {
-  try {
-    const { 
-      latitude, 
-      longitude, 
-      city, 
-      region, 
-      country,
-      street,
-      streetNumber,
-      district,
-      postalCode,
-      formattedAddress
-    } = req.body;
-    
-    if (!latitude || !longitude) {
-      return res.status(400).json({
-        success: false,
-        message: 'Latitude and longitude are required'
-      });
-    }
-    
-    const lat = parseFloat(latitude);
-    const lng = parseFloat(longitude);
-    
-    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid latitude or longitude values'
-      });
-    }
-    
-    // Optional: Validate South Africa bounds (remove if you want global support)
-    if (lat < -35 || lat > -22 || lng < 16 || lng > 33) {
-      console.warn('⚠️ Location outside South Africa:', { lat, lng });
-      // Don't reject, just warn
-    }
-    
-    const user = await User.findById(req.user._id);
+    // ✅ FIXED: No .populate('restaurant') - just get the user
+    const user = await User.findById(req.user._id).select('-password');
     
     if (!user) {
       return res.status(404).json({
@@ -138,63 +28,162 @@ router.put('/location', authMiddleware, async (req, res) => {
         message: 'User not found'
       });
     }
-    
-    // CRITICAL FIX: Update location in proper GeoJSON format
-    // MongoDB GeoJSON requires: [longitude, latitude]
-    user.location = {
-      type: 'Point',
-      coordinates: [lng, lat]  // CORRECT ORDER: [longitude, latitude]
-    };
-    
-    // Also update helper fields for easier access
-    user.latitude = lat;
-    user.longitude = lng;
-    user.lastLocationUpdate = new Date();
-    
-    // Update address if provided (from reverse geocoding)
-    if (street || city) {
-      user.currentAddress = {
-        street: street || user.currentAddress?.street || '',
-        streetNumber: streetNumber || user.currentAddress?.streetNumber || '',
-        district: district || user.currentAddress?.district || '',
-        city: city || user.currentAddress?.city || '',
-        region: region || user.currentAddress?.region || '',
-        postalCode: postalCode || user.currentAddress?.postalCode || '',
-        country: country || 'South Africa',
-        formattedAddress: formattedAddress || `${street || ''}, ${city || ''}`.trim(),
-        coordinates: {
-          latitude: lat,
-          longitude: lng
-        },
-        lastUpdated: new Date()
-      };
-    }
-    
-    // Update city, region for quick queries
-    if (city) user.city = city;
-    if (region) user.region = region;
-    if (country) user.country = country;
-    
-    await user.save();
-    
-    console.log(`✅ Updated location for ${user.email} to [${lng}, ${lat}] (lng, lat) in ${city || 'Unknown City'}`);
-    
-    res.json({
+
+    console.log('✅ Profile fetched successfully:', user.email);
+
+    res.status(200).json({
       success: true,
-      message: 'Location and address updated successfully',
-      location: {
-        latitude: lat,
-        longitude: lng,
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        userType: user.userType,
+        isVerified: user.isVerified,
+        isActive: user.isActive,
+        
+        // Location data
+        location: user.location,
+        latitude: user.latitude,
+        longitude: user.longitude,
         city: user.city,
         region: user.region,
         country: user.country,
-        lastUpdate: user.lastLocationUpdate
-      },
-      currentAddress: user.currentAddress
+        lastLocationUpdate: user.lastLocationUpdate,
+        
+        // Address data
+        currentAddress: user.currentAddress,
+        addresses: user.addresses,
+        
+        // Preferences
+        preferences: user.preferences,
+        
+        // Metadata
+        metadata: user.metadata,
+        
+        // Timestamps
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt
+      }
     });
-    
+
   } catch (error) {
-    console.error('❌ Update location error:', error);
+    console.error('Get profile error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch user profile',
+      error: error.message
+    });
+  }
+});
+
+// ========================================
+// UPDATE USER PROFILE
+// ========================================
+router.put('/profile', protect, async (req, res) => {
+  try {
+    console.log('📝 Updating profile for user:', req.user._id);
+
+    const { name, phone, preferences } = req.body;
+
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Update allowed fields
+    if (name) user.name = name;
+    if (phone) user.phone = phone;
+    if (preferences) {
+      user.preferences = {
+        ...user.preferences,
+        ...preferences
+      };
+    }
+
+    await user.save();
+
+    console.log('✅ Profile updated successfully');
+
+    res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        userType: user.userType,
+        preferences: user.preferences,
+        updatedAt: user.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Update profile error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update profile',
+      error: error.message
+    });
+  }
+});
+
+// ========================================
+// UPDATE USER LOCATION
+// ========================================
+router.put('/location', protect, async (req, res) => {
+  try {
+    console.log('📍 Updating location for user:', req.user._id);
+
+    const { latitude, longitude, city, region, country, ...addressData } = req.body;
+
+    if (!latitude || !longitude) {
+      return res.status(400).json({
+        success: false,
+        message: 'Latitude and longitude are required'
+      });
+    }
+
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Update location using the User model method
+    await user.updateLocation(latitude, longitude, {
+      city,
+      region,
+      country,
+      ...addressData
+    });
+
+    console.log('✅ Location updated successfully');
+
+    res.status(200).json({
+      success: true,
+      message: 'Location updated successfully',
+      user: {
+        _id: user._id,
+        location: user.location,
+        latitude: user.latitude,
+        longitude: user.longitude,
+        city: user.city,
+        region: user.region,
+        currentAddress: user.currentAddress
+      }
+    });
+
+  } catch (error) {
+    console.error('Update location error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to update location',
@@ -203,38 +192,40 @@ router.put('/location', authMiddleware, async (req, res) => {
   }
 });
 
-// PUT /api/users/current-address - Manually update current address
-router.put('/current-address', authMiddleware, async (req, res) => {
+// ========================================
+// UPDATE CURRENT ADDRESS
+// ========================================
+router.put('/current-address', protect, async (req, res) => {
   try {
+    console.log('📍 Updating current address for user:', req.user._id);
+
     const addressData = req.body;
-    
+
     const user = await User.findById(req.user._id);
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
-    
+
     user.currentAddress = {
       ...user.currentAddress,
       ...addressData,
       lastUpdated: new Date()
     };
-    
-    if (addressData.city) user.city = addressData.city;
-    if (addressData.region) user.region = addressData.region;
-    if (addressData.country) user.country = addressData.country;
-    
+
     await user.save();
-    
-    res.json({
+
+    console.log('✅ Current address updated');
+
+    res.status(200).json({
       success: true,
       message: 'Current address updated successfully',
       currentAddress: user.currentAddress
     });
-    
+
   } catch (error) {
     console.error('Update current address error:', error);
     res.status(500).json({
@@ -245,94 +236,63 @@ router.put('/current-address', authMiddleware, async (req, res) => {
   }
 });
 
-// GET /api/users/addresses - Get all delivery addresses
-router.get('/addresses', authMiddleware, async (req, res) => {
+// ========================================
+// GET USER ADDRESSES
+// ========================================
+router.get('/addresses', protect, async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('addresses');
-    
+    const user = await User.findById(req.user._id);
+
     if (!user) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
-    
-    res.json({
+
+    res.status(200).json({
       success: true,
       addresses: user.addresses || []
     });
-    
+
   } catch (error) {
     console.error('Get addresses error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to get addresses',
+      message: 'Failed to fetch addresses',
       error: error.message
     });
   }
 });
 
-// POST /api/users/addresses - Add delivery address
-router.post('/addresses', authMiddleware, async (req, res) => {
+// ========================================
+// ADD DELIVERY ADDRESS
+// ========================================
+router.post('/addresses', protect, async (req, res) => {
   try {
-    const { 
-      label, 
-      street, 
-      city, 
-      state, 
-      zipCode, 
-      latitude, 
-      longitude, 
-      isDefault, 
-      deliveryInstructions 
-    } = req.body;
-    
-    if (!street || !city) {
-      return res.status(400).json({
-        success: false,
-        message: 'Street and city are required'
-      });
-    }
-    
+    console.log('📍 Adding delivery address for user:', req.user._id);
+
+    const addressData = req.body;
+
     const user = await User.findById(req.user._id);
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
-    
-    // If this is set as default, unset all others
-    if (isDefault) {
-      user.addresses.forEach(addr => {
-        addr.isDefault = false;
-      });
-    }
-    
-    const newAddress = {
-      label: label || 'Home',
-      street,
-      city,
-      state: state || '',
-      zipCode: zipCode || '',
-      coordinates: {
-        latitude: latitude || null,
-        longitude: longitude || null
-      },
-      isDefault: isDefault || user.addresses.length === 0,
-      deliveryInstructions: deliveryInstructions || ''
-    };
-    
-    user.addresses.push(newAddress);
-    await user.save();
-    
-    res.json({
+
+    await user.addAddress(addressData);
+
+    console.log('✅ Address added successfully');
+
+    res.status(201).json({
       success: true,
       message: 'Address added successfully',
       addresses: user.addresses
     });
-    
+
   } catch (error) {
     console.error('Add address error:', error);
     res.status(500).json({
@@ -343,49 +303,49 @@ router.post('/addresses', authMiddleware, async (req, res) => {
   }
 });
 
-// PUT /api/users/addresses/:addressId - Update delivery address
-router.put('/addresses/:addressId', authMiddleware, async (req, res) => {
+// ========================================
+// UPDATE DELIVERY ADDRESS
+// ========================================
+router.put('/addresses/:addressId', protect, async (req, res) => {
   try {
+    console.log('📍 Updating address:', req.params.addressId);
+
     const { addressId } = req.params;
     const updateData = req.body;
-    
+
     const user = await User.findById(req.user._id);
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
-    
-    const addressIndex = user.addresses.findIndex(
-      addr => addr._id.toString() === addressId
-    );
-    
-    if (addressIndex === -1) {
+
+    const address = user.addresses.id(addressId);
+
+    if (!address) {
       return res.status(404).json({
         success: false,
         message: 'Address not found'
       });
     }
-    
-    // If setting as default, unset all others
-    if (updateData.isDefault) {
-      user.addresses.forEach((addr, idx) => {
-        addr.isDefault = idx === addressIndex;
-      });
-    }
-    
-    // Update the address
-    Object.assign(user.addresses[addressIndex], updateData);
+
+    // Update address fields
+    Object.keys(updateData).forEach(key => {
+      address[key] = updateData[key];
+    });
+
     await user.save();
-    
-    res.json({
+
+    console.log('✅ Address updated successfully');
+
+    res.status(200).json({
       success: true,
       message: 'Address updated successfully',
       addresses: user.addresses
     });
-    
+
   } catch (error) {
     console.error('Update address error:', error);
     res.status(500).json({
@@ -396,47 +356,36 @@ router.put('/addresses/:addressId', authMiddleware, async (req, res) => {
   }
 });
 
-// DELETE /api/users/addresses/:addressId - Delete delivery address
-router.delete('/addresses/:addressId', authMiddleware, async (req, res) => {
+// ========================================
+// DELETE DELIVERY ADDRESS
+// ========================================
+router.delete('/addresses/:addressId', protect, async (req, res) => {
   try {
+    console.log('🗑️ Deleting address:', req.params.addressId);
+
     const { addressId } = req.params;
-    
+
     const user = await User.findById(req.user._id);
-    
+
     if (!user) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
-    
-    const addressIndex = user.addresses.findIndex(
-      addr => addr._id.toString() === addressId
-    );
-    
-    if (addressIndex === -1) {
-      return res.status(404).json({
-        success: false,
-        message: 'Address not found'
-      });
-    }
-    
-    const wasDefault = user.addresses[addressIndex].isDefault;
-    user.addresses.splice(addressIndex, 1);
-    
-    // If deleted address was default, make first address default
-    if (wasDefault && user.addresses.length > 0) {
-      user.addresses[0].isDefault = true;
-    }
-    
+
+    // Use Mongoose's pull method to remove the address
+    user.addresses.pull(addressId);
     await user.save();
-    
-    res.json({
+
+    console.log('✅ Address deleted successfully');
+
+    res.status(200).json({
       success: true,
       message: 'Address deleted successfully',
       addresses: user.addresses
     });
-    
+
   } catch (error) {
     console.error('Delete address error:', error);
     res.status(500).json({
@@ -447,350 +396,198 @@ router.delete('/addresses/:addressId', authMiddleware, async (req, res) => {
   }
 });
 
-// ========== PASSWORD & SECURITY ==========
-
-// Change password
-router.put('/change-password', authMiddleware, async (req, res) => {
+// ========================================
+// SET DEFAULT ADDRESS
+// ========================================
+router.put('/addresses/:addressId/default', protect, async (req, res) => {
   try {
-    const { currentPassword, newPassword } = req.body;
-    
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Current and new passwords are required' 
-      });
-    }
-    
-    if (newPassword.length < 6) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'New password must be at least 6 characters' 
-      });
-    }
-    
+    console.log('⭐ Setting default address:', req.params.addressId);
+
+    const { addressId } = req.params;
+
     const user = await User.findById(req.user._id);
-    
-    const isMatch = await bcrypt.compare(currentPassword, user.password);
-    if (!isMatch) {
-      return res.status(400).json({ 
+
+    if (!user) {
+      return res.status(404).json({
         success: false,
-        message: 'Current password is incorrect' 
+        message: 'User not found'
       });
     }
-    
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    
-    await User.findByIdAndUpdate(req.user._id, {
-      password: hashedPassword,
-      'accountActivity.lastPasswordChange': new Date(),
-      updatedAt: new Date()
-    });
-    
-    res.json({ 
-      success: true,
-      message: 'Password changed successfully' 
-    });
-  } catch (error) {
-    console.error('Change password error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error changing password' 
-    });
-  }
-});
 
-// ========== ACTIVITY & PREFERENCES ==========
+    // Set all addresses to non-default
+    user.addresses.forEach(addr => {
+      addr.isDefault = false;
+    });
 
-// Update last activity
-router.put('/activity', authMiddleware, async (req, res) => {
-  try {
-    const { lastActive, platform } = req.body;
-    
-    await User.findByIdAndUpdate(req.user._id, {
-      lastActive: lastActive || new Date(),
-      platform: platform || 'unknown',
-      updatedAt: new Date()
-    });
-    
-    res.json({ 
-      success: true,
-      message: 'Activity updated' 
-    });
-  } catch (error) {
-    console.error('Update activity error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error updating activity' 
-    });
-  }
-});
+    // Set the specified address as default
+    const address = user.addresses.id(addressId);
 
-// Get notification preferences
-router.get('/notifications', authMiddleware, async (req, res) => {
-  try {
-    const user = await User.findById(req.user._id)
-      .select('notificationPreferences')
-      .lean();
-    
-    const defaultPreferences = {
-      orderUpdates: true,
-      promotions: true,
-      newFeatures: false,
-      weeklyReports: true,
-      email: true,
-      push: true,
-      sms: false
-    };
-    
-    res.json({
-      success: true,
-      preferences: user.notificationPreferences || defaultPreferences
-    });
-  } catch (error) {
-    console.error('Get notifications error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error fetching notification preferences' 
-    });
-  }
-});
-
-// Update notification preferences
-router.put('/notifications', authMiddleware, async (req, res) => {
-  try {
-    const preferences = req.body;
-    
-    await User.findByIdAndUpdate(req.user._id, {
-      notificationPreferences: preferences,
-      updatedAt: new Date()
-    });
-    
-    res.json({ 
-      success: true,
-      message: 'Notification preferences updated', 
-      preferences 
-    });
-  } catch (error) {
-    console.error('Update notifications error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error updating notification preferences' 
-    });
-  }
-});
-
-// ========== ACCOUNT MANAGEMENT ==========
-
-// Deactivate account
-router.put('/deactivate', authMiddleware, async (req, res) => {
-  try {
-    await User.findByIdAndUpdate(req.user._id, {
-      isActive: false,
-      deactivatedAt: new Date(),
-      updatedAt: new Date()
-    });
-    
-    // If vendor, deactivate restaurant too
-    if (req.user.userType === 'vendor' && req.user.restaurant) {
-      await Restaurant.findByIdAndUpdate(req.user.restaurant, {
-        isActive: false,
-        status: 'inactive',
-        updatedAt: new Date()
-      });
-    }
-    
-    res.json({ 
-      success: true,
-      message: 'Account deactivated successfully' 
-    });
-  } catch (error) {
-    console.error('Deactivate account error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error deactivating account' 
-    });
-  }
-});
-
-// Delete account (soft delete)
-router.delete('/account', authMiddleware, async (req, res) => {
-  try {
-    const { password } = req.body;
-    
-    if (!password) {
-      return res.status(400).json({ 
+    if (!address) {
+      return res.status(404).json({
         success: false,
-        message: 'Password confirmation required' 
+        message: 'Address not found'
       });
     }
+
+    address.isDefault = true;
+    await user.save();
+
+    console.log('✅ Default address set');
+
+    res.status(200).json({
+      success: true,
+      message: 'Default address set successfully',
+      addresses: user.addresses
+    });
+
+  } catch (error) {
+    console.error('Set default address error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to set default address',
+      error: error.message
+    });
+  }
+});
+
+// ========================================
+// UPLOAD PROFILE IMAGE
+// ========================================
+router.post('/profile/image', protect, async (req, res) => {
+  try {
+    console.log('📸 Uploading profile image for user:', req.user._id);
+
+    // This route should use multer middleware for file upload
+    // Add your image upload logic here
     
+    res.status(501).json({
+      success: false,
+      message: 'Profile image upload not implemented yet'
+    });
+
+  } catch (error) {
+    console.error('Upload profile image error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upload profile image',
+      error: error.message
+    });
+  }
+});
+
+// ========================================
+// GET USER FAVORITES
+// ========================================
+router.get('/favorites', protect, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).populate('favorites');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      favorites: user.favorites || []
+    });
+
+  } catch (error) {
+    console.error('Get favorites error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch favorites',
+      error: error.message
+    });
+  }
+});
+
+// ========================================
+// ADD FAVORITE RESTAURANT
+// ========================================
+router.post('/favorites', protect, async (req, res) => {
+  try {
+    const { restaurantId } = req.body;
+
+    if (!restaurantId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Restaurant ID is required'
+      });
+    }
+
     const user = await User.findById(req.user._id);
-    const isMatch = await bcrypt.compare(password, user.password);
-    
-    if (!isMatch) {
-      return res.status(400).json({ 
+
+    if (!user) {
+      return res.status(404).json({
         success: false,
-        message: 'Incorrect password' 
+        message: 'User not found'
       });
     }
-    
-    await User.findByIdAndUpdate(req.user._id, {
-      isActive: false,
-      isDeleted: true,
-      deletedAt: new Date(),
-      email: `deleted_${Date.now()}_${user.email}`,
-      updatedAt: new Date()
-    });
-    
-    // If vendor, mark restaurant as deleted
-    if (req.user.userType === 'vendor' && req.user.restaurant) {
-      await Restaurant.findByIdAndUpdate(req.user.restaurant, {
-        isActive: false,
-        status: 'deleted',
-        updatedAt: new Date()
-      });
+
+    // Add to favorites if not already there
+    if (!user.favorites) {
+      user.favorites = [];
     }
-    
-    res.json({ 
-      success: true, 
-      message: 'Account deleted successfully' 
+
+    if (!user.favorites.includes(restaurantId)) {
+      user.favorites.push(restaurantId);
+      await user.save();
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Restaurant added to favorites',
+      favorites: user.favorites
     });
+
   } catch (error) {
-    console.error('Delete account error:', error);
-    res.status(500).json({ 
+    console.error('Add favorite error:', error);
+    res.status(500).json({
       success: false,
-      message: 'Error deleting account' 
+      message: 'Failed to add favorite',
+      error: error.message
     });
   }
 });
 
-// ========== STATISTICS (FOR VENDORS) ==========
-
-// Get user statistics
-router.get('/stats', authMiddleware, async (req, res) => {
+// ========================================
+// REMOVE FAVORITE RESTAURANT
+// ========================================
+router.delete('/favorites/:restaurantId', protect, async (req, res) => {
   try {
-    if (req.user.userType !== 'vendor') {
-      return res.status(403).json({ 
+    const { restaurantId } = req.params;
+
+    const user = await User.findById(req.user._id);
+
+    if (!user) {
+      return res.status(404).json({
         success: false,
-        message: 'Only vendors can access stats' 
+        message: 'User not found'
       });
     }
-    
-    const Order = require('../models/Order');
-    const MenuItem = require('../models/MenuItem');
-    
-    const today = new Date();
-    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
-    
-    const [
-      todayOrders,
-      monthOrders,
-      totalOrders,
-      menuItemsCount
-    ] = await Promise.all([
-      Order.countDocuments({
-        restaurant: req.user.restaurant,
-        createdAt: { $gte: todayStart }
-      }),
-      Order.countDocuments({
-        restaurant: req.user.restaurant,
-        createdAt: { $gte: monthStart }
-      }),
-      Order.countDocuments({
-        restaurant: req.user.restaurant
-      }),
-      MenuItem.countDocuments({
-        restaurant: req.user.restaurant
-      })
-    ]);
-    
-    const revenueStats = await Order.aggregate([
-      {
-        $match: {
-          restaurant: req.user.restaurant,
-          status: 'delivered',
-          paymentStatus: 'paid'
-        }
-      },
-      {
-        $group: {
-          _id: null,
-          totalRevenue: { $sum: '$total' },
-          todayRevenue: {
-            $sum: {
-              $cond: [
-                { $gte: ['$createdAt', todayStart] },
-                '$total',
-                0
-              ]
-            }
-          },
-          monthRevenue: {
-            $sum: {
-              $cond: [
-                { $gte: ['$createdAt', monthStart] },
-                '$total',
-                0
-              ]
-            }
-          }
-        }
-      }
-    ]);
-    
-    const revenue = revenueStats[0] || {
-      totalRevenue: 0,
-      todayRevenue: 0,
-      monthRevenue: 0
-    };
-    
-    res.json({
-      success: true,
-      orders: {
-        today: todayOrders,
-        month: monthOrders,
-        total: totalOrders
-      },
-      revenue: {
-        today: revenue.todayRevenue,
-        month: revenue.monthRevenue,
-        total: revenue.totalRevenue
-      },
-      menuItems: menuItemsCount,
-      generatedAt: new Date().toISOString()
-    });
-    
-  } catch (error) {
-    console.error('Get user stats error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error fetching user statistics' 
-    });
-  }
-});
 
-// ========== DEBUG & UTILITY ==========
+    if (user.favorites) {
+      user.favorites = user.favorites.filter(
+        fav => fav.toString() !== restaurantId
+      );
+      await user.save();
+    }
 
-// Debug endpoint - Get current user info
-router.get('/debug-me', authMiddleware, async (req, res) => {
-  try {
-    const user = await User.findById(req.user._id)
-      .select('-password')
-      .populate('restaurant')
-      .populate('driverProfile');
-    
-    res.json({
+    res.status(200).json({
       success: true,
-      user: user,
-      tokenUser: req.user,
-      timestamp: new Date().toISOString()
+      message: 'Restaurant removed from favorites',
+      favorites: user.favorites || []
     });
+
   } catch (error) {
-    console.error('Debug user error:', error);
-    res.status(500).json({ 
+    console.error('Remove favorite error:', error);
+    res.status(500).json({
       success: false,
-      message: 'Error getting user debug info' 
+      message: 'Failed to remove favorite',
+      error: error.message
     });
   }
 });

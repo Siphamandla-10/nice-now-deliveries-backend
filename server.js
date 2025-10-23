@@ -1,4 +1,4 @@
-// server.js - COMPLETE VERSION WITH CLOUDINARY AND DYNAMIC IP
+// server.js - FIXED AND OPTIMIZED VERSION
 require('dotenv').config();
 
 const express = require('express');
@@ -7,18 +7,16 @@ const cors = require('cors');
 const http = require('http');
 const socketIo = require('socket.io');
 const path = require('path');
-const fs = require('fs');
-const os = require('os'); // Added for dynamic IP detection
+const os = require('os');
 
 const app = express();
 const server = http.createServer(app);
 
-// Function to get local network IP
+// ========== UTILITY FUNCTIONS ==========
 const getLocalIP = () => {
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
     for (const iface of interfaces[name]) {
-      // Skip internal (loopback) and non-IPv4 addresses
       if (iface.family === 'IPv4' && !iface.internal) {
         return iface.address;
       }
@@ -27,41 +25,34 @@ const getLocalIP = () => {
   return 'localhost';
 };
 
-// CORS configuration
+// ========== CORS CONFIGURATION ==========
+const localIP = getLocalIP();
 const corsOptions = {
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
-    
-    const localIP = getLocalIP(); // Get current IP dynamically
     
     const allowedOrigins = [
       "http://localhost:3000",
       "http://localhost:8081",
       "http://localhost:19006",
-      `http://${localIP}:8081`,       // Dynamic current IP
-      `http://${localIP}:19006`,      // Dynamic current IP
-      `http://${localIP}:3000`,       // Dynamic current IP
-      "http://192.168.1.150:8081",    // Current IP
-      "http://192.168.1.150:19006",   // Current IP
-      "http://192.168.1.150:3000",    // Current IP
-      "http://192.168.0.129:8081",    // Old IP (keep for reference)
-      "http://192.168.0.129:19006",   // Old IP
-      "http://192.168.0.129:3000",    // Old IP
-      "http://192.168.1.116:8081",    // Old IP
-      "http://192.168.1.116:19006",   // Old IP
-      "http://192.168.1.116:3000",    // Old IP
+      `http://${localIP}:8081`,
+      `http://${localIP}:19006`,
+      `http://${localIP}:3000`,
+      "http://192.168.1.150:8081",
+      "http://192.168.1.150:19006",
+      "http://192.168.1.150:3000",
+      "http://192.168.0.129:8081",
+      "http://192.168.0.129:19006",
       "capacitor://localhost",
       "ionic://localhost",
     ];
     
-    if (process.env.NODE_ENV === 'production') {
-      return callback(null, true);
-    }
-    
-    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
+    if (process.env.NODE_ENV === 'production' || 
+        allowedOrigins.indexOf(origin) !== -1 || 
+        process.env.NODE_ENV === 'development') {
       callback(null, true);
     } else {
-      callback(null, true);
+      callback(null, true); // Allow all in development
     }
   },
   credentials: true,
@@ -75,13 +66,20 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-// Request logging
+// ========== MIDDLEWARE ==========
+
+// Request logging with better formatting
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ${req.method} ${req.path}`);
   next();
 });
 
-// Socket.io
+// Body parsing
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Socket.io setup
 const io = socketIo(server, {
   cors: {
     origin: true,
@@ -95,22 +93,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Body parsing
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// MongoDB connection
+// ========== DATABASE CONNECTION ==========
 mongoose.connect(process.env.MONGO_URI)
   .then(async () => {
-    console.log('MongoDB Connected Successfully');
-    console.log('Database:', mongoose.connection.db.databaseName);
+    console.log('✅ MongoDB Connected Successfully');
+    console.log('📊 Database:', mongoose.connection.db.databaseName);
     
     if (process.env.NODE_ENV !== 'production') {
       await testDatabase();
     }
   })
   .catch(err => {
-    console.error('MongoDB connection error:', err);
+    console.error('❌ MongoDB connection error:', err);
     process.exit(1);
   });
 
@@ -124,56 +118,142 @@ const testDatabase = async () => {
     const orderCount = await Order.countDocuments();
     const userCount = await User.countDocuments();
     
-    console.log('Database counts:');
-    console.log('  Payments:', paymentCount);
-    console.log('  Orders:', orderCount);
-    console.log('  Users:', userCount);
+    console.log('📈 Database counts:');
+    console.log('   Payments:', paymentCount);
+    console.log('   Orders:', orderCount);
+    console.log('   Users:', userCount);
   } catch (error) {
-    console.error('Database test failed:', error.message);
+    console.error('⚠️ Database test failed:', error.message);
   }
 };
 
-// Load models
-console.log('Loading models...');
+// ========== LOAD MODELS ==========
+console.log('📦 Loading models...');
 require('./models/User');
 require('./models/Restaurant');
 require('./models/MenuItem');
 require('./models/Driver');
 require('./models/Order');
 require('./models/Payment');
-console.log('Models loaded:', Object.keys(mongoose.models));
+console.log('✅ Models loaded:', Object.keys(mongoose.models).join(', '));
 
-// Load routes
-const authRoutes = require('./routes/auth');
-const userRoutes = require('./routes/users');
-const restaurantRoutes = require('./routes/restaurants');
-const orderRoutes = require('./routes/orders');
-const paymentRoutes = require('./routes/payments');
-const vendorRoutes = require('./routes/vendors');
-const driverRoutes = require('./routes/drivers');
-const uploadRoutes = require('./routes/upload');  // Cloudinary routes
+// ========== LOAD ROUTES ==========
+console.log('🛣️  Loading routes...');
 
-// Register routes
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/restaurants', restaurantRoutes);
-app.use('/api/orders', orderRoutes);
-app.use('/api/payments', paymentRoutes);
-app.use('/api/vendors', vendorRoutes);
-app.use('/api/drivers', driverRoutes);
-app.use('/api/upload', uploadRoutes);
+let authRoutes, userRoutes, restaurantRoutes, orderRoutes, 
+    paymentRoutes, vendorRoutes, driverRoutes, uploadRoutes;
 
-// Serve static files
+try {
+  authRoutes = require('./routes/auth');
+  console.log('   ✅ Auth routes loaded');
+} catch (e) {
+  console.error('   ❌ Auth routes failed:', e.message);
+}
+
+try {
+  userRoutes = require('./routes/users');
+  console.log('   ✅ Users routes loaded');
+} catch (e) {
+  console.error('   ❌ Users routes failed:', e.message);
+}
+
+try {
+  restaurantRoutes = require('./routes/restaurants');
+  console.log('   ✅ Restaurants routes loaded');
+} catch (e) {
+  console.error('   ❌ Restaurants routes failed:', e.message);
+}
+
+try {
+  orderRoutes = require('./routes/orders');
+  console.log('   ✅ Orders routes loaded');
+} catch (e) {
+  console.error('   ❌ Orders routes failed:', e.message);
+}
+
+try {
+  paymentRoutes = require('./routes/payments');
+  console.log('   ✅ Payments routes loaded');
+} catch (e) {
+  console.error('   ❌ Payments routes failed:', e.message);
+}
+
+try {
+  vendorRoutes = require('./routes/vendors');
+  console.log('   ✅ Vendors routes loaded');
+} catch (e) {
+  console.error('   ❌ Vendors routes failed:', e.message);
+}
+
+try {
+  driverRoutes = require('./routes/drivers');
+  console.log('   ✅ Drivers routes loaded');
+} catch (e) {
+  console.error('   ❌ Drivers routes failed:', e.message);
+}
+
+try {
+  uploadRoutes = require('./routes/upload');
+  console.log('   ✅ Upload routes loaded');
+} catch (e) {
+  console.error('   ❌ Upload routes failed:', e.message);
+}
+
+// ========== REGISTER ROUTES ==========
+console.log('🔗 Registering routes...');
+
+if (authRoutes) {
+  app.use('/api/auth', authRoutes);
+  console.log('   ✅ /api/auth registered');
+}
+
+if (userRoutes) {
+  app.use('/api/users', userRoutes);
+  console.log('   ✅ /api/users registered');
+}
+
+if (restaurantRoutes) {
+  app.use('/api/restaurants', restaurantRoutes);
+  console.log('   ✅ /api/restaurants registered');
+}
+
+if (orderRoutes) {
+  app.use('/api/orders', orderRoutes);
+  console.log('   ✅ /api/orders registered');
+}
+
+if (paymentRoutes) {
+  app.use('/api/payments', paymentRoutes);
+  console.log('   ✅ /api/payments registered');
+}
+
+if (vendorRoutes) {
+  app.use('/api/vendors', vendorRoutes);
+  console.log('   ✅ /api/vendors registered');
+}
+
+if (driverRoutes) {
+  app.use('/api/drivers', driverRoutes);
+  console.log('   ✅ /api/drivers registered');
+}
+
+if (uploadRoutes) {
+  app.use('/api/upload', uploadRoutes);
+  console.log('   ✅ /api/upload registered');
+}
+
+// ========== STATIC FILES ==========
 const uploadsPath = path.join(__dirname, 'uploads');
 app.use('/uploads', express.static(uploadsPath));
 
-// Health check
+// ========== API ENDPOINTS ==========
+
+// Health check with detailed info
 app.get('/api/health', async (req, res) => {
   try {
     const dbState = mongoose.connection.readyState;
     const states = { 0: 'disconnected', 1: 'connected', 2: 'connecting', 3: 'disconnecting' };
     
-    // Check Cloudinary configuration
     const cloudinaryConfigured = !!(
       process.env.CLOUDINARY_CLOUD_NAME && 
       process.env.CLOUDINARY_API_KEY && 
@@ -184,6 +264,7 @@ app.get('/api/health', async (req, res) => {
       status: 'ok', 
       timestamp: new Date().toISOString(),
       environment: process.env.NODE_ENV || 'development',
+      serverIP: getLocalIP(),
       database: {
         state: states[dbState],
         connected: dbState === 1,
@@ -193,11 +274,23 @@ app.get('/api/health', async (req, res) => {
         configured: cloudinaryConfigured,
         cloudName: cloudinaryConfigured ? process.env.CLOUDINARY_CLOUD_NAME : 'not configured'
       },
-      models: Object.keys(mongoose.models),
-      serverIP: getLocalIP() // Added server IP to health check
+      routes: {
+        auth: !!authRoutes,
+        users: !!userRoutes,
+        restaurants: !!restaurantRoutes,
+        orders: !!orderRoutes,
+        payments: !!paymentRoutes,
+        vendors: !!vendorRoutes,
+        drivers: !!driverRoutes,
+        upload: !!uploadRoutes
+      },
+      models: Object.keys(mongoose.models)
     });
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    res.status(500).json({ 
+      status: 'error', 
+      message: error.message 
+    });
   }
 });
 
@@ -207,7 +300,7 @@ app.get('/', (req, res) => {
     message: 'Nice Now Deliveries API',
     version: '1.0.0',
     status: 'running',
-    serverIP: getLocalIP(), // Added server IP info
+    serverIP: getLocalIP(),
     endpoints: {
       health: '/api/health',
       auth: '/api/auth',
@@ -218,59 +311,126 @@ app.get('/', (req, res) => {
       vendors: '/api/vendors',
       drivers: '/api/drivers',
       upload: '/api/upload'
+    },
+    documentation: {
+      orders: {
+        myOrders: 'GET /api/orders/my-orders',
+        allOrders: 'GET /api/orders',
+        createOrder: 'POST /api/orders',
+        orderDetails: 'GET /api/orders/:id',
+        testDebug: 'GET /api/orders/test-debug'
+      }
     }
   });
 });
 
+// Debug endpoint to list all registered routes
+app.get('/api/debug/routes', (req, res) => {
+  const routes = [];
+  
+  app._router.stack.forEach((middleware) => {
+    if (middleware.route) {
+      routes.push({
+        path: middleware.route.path,
+        methods: Object.keys(middleware.route.methods)
+      });
+    } else if (middleware.name === 'router') {
+      middleware.handle.stack.forEach((handler) => {
+        if (handler.route) {
+          const path = middleware.regexp.source
+            .replace('\\/?', '')
+            .replace('(?=\\/|$)', '')
+            .replace(/\\\//g, '/');
+          routes.push({
+            path: path + handler.route.path,
+            methods: Object.keys(handler.route.methods)
+          });
+        }
+      });
+    }
+  });
+  
+  res.json({
+    success: true,
+    totalRoutes: routes.length,
+    routes: routes
+  });
+});
+
+// ========== ERROR HANDLERS ==========
+
 // 404 handler
 app.use('*', (req, res) => {
+  console.log(`⚠️ 404 - Route not found: ${req.method} ${req.originalUrl}`);
   res.status(404).json({ 
+    success: false,
     message: 'Route not found',
     path: req.originalUrl,
-    method: req.method
+    method: req.method,
+    hint: 'Try GET /api/debug/routes to see all available routes'
   });
 });
 
 // Error handler
 app.use((error, req, res, next) => {
-  console.error('Error:', error);
+  console.error('❌ Error:', error);
   res.status(500).json({ 
+    success: false,
     message: 'Internal server error',
     error: process.env.NODE_ENV === 'development' ? error.message : 'Something went wrong'
   });
 });
 
-// Start server
+// ========== START SERVER ==========
 const PORT = process.env.PORT || 5000;
 
 server.listen(PORT, '0.0.0.0', () => {
-  const localIP = getLocalIP(); // Get dynamic IP
+  const ip = getLocalIP();
   
+  console.log('\n================================================');
+  console.log('🚀 SERVER STARTED SUCCESSFULLY');
   console.log('================================================');
-  console.log(`Server Running on 0.0.0.0:${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Local: http://localhost:${PORT}`);
-  console.log(`Network: http://${localIP}:${PORT}`); // Dynamic IP
-  console.log(`API Base: http://${localIP}:${PORT}/api`); // Dynamic IP
+  console.log(`📍 Local:    http://localhost:${PORT}`);
+  console.log(`📍 Network:  http://${ip}:${PORT}`);
+  console.log(`📍 API Base: http://${ip}:${PORT}/api`);
   console.log('');
-  console.log('Available Routes:');
-  console.log('  /api/auth       - Authentication');
-  console.log('  /api/users      - User management');
-  console.log('  /api/restaurants - Restaurant operations');
-  console.log('  /api/orders     - Order management');
-  console.log('  /api/payments   - Payment processing');
-  console.log('  /api/vendors    - Vendor operations');
-  console.log('  /api/drivers    - Driver operations');
-  console.log('  /api/upload     - Image uploads (Cloudinary)');
+  console.log('📋 Available Routes:');
+  console.log('   ✅ /api/health       - Health check');
+  console.log('   ✅ /api/auth         - Authentication');
+  console.log('   ✅ /api/users        - User management');
+  console.log('   ✅ /api/restaurants  - Restaurants');
+  console.log('   ✅ /api/orders       - Order management 🎯');
+  console.log('   ✅ /api/payments     - Payments');
+  console.log('   ✅ /api/vendors      - Vendor operations');
+  console.log('   ✅ /api/drivers      - Driver operations');
+  console.log('   ✅ /api/upload       - Image uploads');
+  console.log('');
+  console.log('🧪 Quick Tests:');
+  console.log(`   curl http://localhost:${PORT}/api/health`);
+  console.log(`   curl http://localhost:${PORT}/api/orders/test-debug`);
+  console.log(`   curl http://localhost:${PORT}/api/debug/routes`);
   console.log('');
   const cloudinaryConfigured = !!(
     process.env.CLOUDINARY_CLOUD_NAME && 
     process.env.CLOUDINARY_API_KEY && 
     process.env.CLOUDINARY_API_SECRET
   );
-  console.log('Cloudinary: ' + (cloudinaryConfigured ? 'Configured' : 'Not configured'));
+  console.log('☁️  Cloudinary:', cloudinaryConfigured ? '✅ Configured' : '❌ Not configured');
+  console.log('📦 Models loaded:', Object.keys(mongoose.models).length);
   console.log('================================================');
-  console.log(`\n📱 Update your app to use: http://${localIP}:${PORT}/api\n`); // Helpful reminder
+  console.log(`\n📱 React Native App Config:`);
+  console.log(`   API_BASE_URL = "http://${ip}:${PORT}/api"\n`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, closing server...');
+  server.close(() => {
+    mongoose.connection.close(false, () => {
+      console.log('MongoDB connection closed');
+      process.exit(0);
+    });
+  });
 });
 
 module.exports = app;
