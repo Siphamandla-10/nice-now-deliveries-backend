@@ -1,11 +1,11 @@
-// models/Order.js - COMPLETE FIXED VERSION
+// models/Order.js - FIXED VERSION
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
   // Order identification
   orderNumber: {
     type: String,
-    required: true,
+    required: false,  // ✅ FIXED: Changed to false since pre-save generates it
     unique: true
   },
 
@@ -206,13 +206,15 @@ orderSchema.index({ driver: 1, status: 1 });
 orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ orderNumber: 1 }, { unique: true });
 
-// Pre-save middleware to generate order number
+// ✅ FIXED: Pre-save middleware to generate order number
 orderSchema.pre('save', function(next) {
+  // Always generate orderNumber for new documents if not provided
   if (this.isNew && !this.orderNumber) {
     const date = new Date();
     const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
     const randomNum = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
     this.orderNumber = `ORD-${dateStr}-${randomNum}`;
+    console.log('📋 Auto-generated orderNumber:', this.orderNumber);
   }
   next();
 });

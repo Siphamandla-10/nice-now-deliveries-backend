@@ -1,4 +1,4 @@
-﻿// routes/vendors.js - COMPLETE VERSION WITH COMPREHENSIVE DEBUGGING
+﻿// routes/vendors.js - COMPLETE FIXED VERSION WITH ORDER STATUS UPDATE
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -270,12 +270,12 @@ router.put('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => 
       });
     }
     
-    const allowedFields = [
+    const updateFields = [
       'name', 'description', 'cuisine', 'deliveryFee', 'minimumOrder',
-      'contact', 'address', 'hours', 'isActive', 'status'
+      'isActive', 'status', 'contact', 'address', 'images'
     ];
     
-    allowedFields.forEach(field => {
+    updateFields.forEach(field => {
       if (req.body[field] !== undefined) {
         restaurant[field] = req.body[field];
       }
@@ -299,84 +299,7 @@ router.put('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => 
   }
 });
 
-router.post('/restaurant/image', authMiddleware, vendorMiddleware, upload.single('image'), async (req, res) => {
-  try {
-    console.log('Uploading restaurant image to Cloudinary');
-    
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: 'No image file provided'
-      });
-    }
-    
-    const { imageType } = req.body;
-    
-    if (!imageType || !['profile', 'cover'].includes(imageType)) {
-      await deleteFile(req.file.filename);
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid image type. Must be "profile" or "cover"'
-      });
-    }
-    
-    const restaurant = await Restaurant.findOne({ owner: req.user._id });
-    
-    if (!restaurant) {
-      await deleteFile(req.file.filename);
-      return res.status(404).json({
-        success: false,
-        message: 'Restaurant not found'
-      });
-    }
-    
-    const imageUrl = req.file.path;
-    const publicId = req.file.filename;
-    
-    if (imageType === 'profile') {
-      if (restaurant.images?.profileImage?.publicId) {
-        await deleteFile(restaurant.images.profileImage.publicId);
-      }
-      
-      restaurant.images = restaurant.images || {};
-      restaurant.images.profileImage = {
-        publicId: publicId,
-        url: imageUrl,
-        uploadedAt: new Date()
-      };
-    } else if (imageType === 'cover') {
-      if (restaurant.images?.coverImage?.publicId) {
-        await deleteFile(restaurant.images.coverImage.publicId);
-      }
-      
-      restaurant.images = restaurant.images || {};
-      restaurant.images.coverImage = {
-        publicId: publicId,
-        url: imageUrl,
-        uploadedAt: new Date()
-      };
-    }
-    
-    await restaurant.save();
-    
-    res.json({
-      success: true,
-      message: 'Image uploaded successfully',
-      imageUrl: imageUrl
-    });
-    
-  } catch (error) {
-    console.error('Upload restaurant image error:', error);
-    if (req.file?.filename) await deleteFile(req.file.filename);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to upload image',
-      error: error.message
-    });
-  }
-});
-
-// ===== ORDER MANAGEMENT - SUPER FIXED VERSION WITH ALL DEBUGGING =====
+// ===== ORDER MANAGEMENT =====
 
 router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
@@ -384,62 +307,54 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
     console.log('=== VENDOR ORDERS - COMPREHENSIVE DEBUG ===');
     console.log('========================================');
     
-    const userId = req.user._id || req.user.id;
-    console.log('1. Vendor User ID:', userId);
-    console.log('   Type:', typeof userId);
-    console.log('   As String:', userId.toString());
-
-    // Find restaurant owned by this vendor
-    const restaurant = await Restaurant.findOne({ owner: userId });
+    const vendorId = req.user._id;
+    
+    console.log('1. Vendor User ID:', vendorId);
+    console.log('   Type:', typeof vendorId);
+    console.log('   As String:', vendorId.toString());
+    
     console.log('\n2. Restaurant Lookup:');
-    if (restaurant) {
-      console.log('   ✓ Restaurant Found');
-      console.log('   Restaurant ID:', restaurant._id);
-      console.log('   Restaurant Name:', restaurant.name);
-      console.log('   Owner ID:', restaurant.owner);
-      console.log('   Owner matches?', restaurant.owner.toString() === userId.toString());
-    } else {
+    const restaurant = await Restaurant.findOne({ owner: vendorId });
+    
+    if (!restaurant) {
       console.log('   ✗ NO RESTAURANT FOUND');
       return res.json({
         success: true,
         orders: [],
-        pagination: { current: 1, total: 0, totalOrders: 0 },
-        debug: { message: 'No restaurant found for this vendor' }
+        message: 'Please create your restaurant profile first'
       });
     }
-
+    
+    console.log('   ✓ Restaurant Found');
+    console.log('   Restaurant ID:', restaurant._id);
+    console.log('   Restaurant Name:', restaurant.name);
+    console.log('   Owner ID:', restaurant.owner);
+    console.log('   Owner matches?', restaurant.owner.toString() === vendorId.toString());
+    
     console.log('\n3. Database Order Analysis:');
     const totalOrders = await Order.countDocuments({});
     console.log('   Total orders in DB:', totalOrders);
-
-    // Try multiple query approaches
-    const approachResults = [];
-
-    // Approach 1: Match by restaurant ObjectId
-    const count1 = await Order.countDocuments({ restaurant: restaurant._id });
-    console.log('   Approach 1 (restaurant ObjectId):', count1, 'orders');
-    approachResults.push({ approach: 'restaurant ObjectId', count: count1 });
-
-    // Approach 2: Match by restaurant string
-    const count2 = await Order.countDocuments({ restaurant: restaurant._id.toString() });
-    console.log('   Approach 2 (restaurant string):', count2, 'orders');
-    approachResults.push({ approach: 'restaurant string', count: count2 });
-
-    // Approach 3: Match by vendor field
-    const count3 = await Order.countDocuments({ vendor: userId });
-    console.log('   Approach 3 (vendor ObjectId):', count3, 'orders');
-    approachResults.push({ approach: 'vendor ObjectId', count: count3 });
-
-    // Approach 4: Match by vendor string
-    const count4 = await Order.countDocuments({ vendor: userId.toString() });
-    console.log('   Approach 4 (vendor string):', count4, 'orders');
-    approachResults.push({ approach: 'vendor string', count: count4 });
-
-    // Get sample orders to inspect structure
+    
+    const byRestaurant1 = await Order.countDocuments({ restaurant: restaurant._id });
+    console.log('   Approach 1 (restaurant ObjectId):', byRestaurant1, 'orders');
+    
+    const byRestaurant2 = await Order.countDocuments({ 
+      restaurant: restaurant._id.toString() 
+    });
+    console.log('   Approach 2 (restaurant string):', byRestaurant2, 'orders');
+    
+    const byVendor1 = await Order.countDocuments({ vendor: vendorId });
+    console.log('   Approach 3 (vendor ObjectId):', byVendor1, 'orders');
+    
+    const byVendor2 = await Order.countDocuments({ 
+      vendor: vendorId.toString() 
+    });
+    console.log('   Approach 4 (vendor string):', byVendor2, 'orders');
+    
     console.log('\n4. Sample Order Inspection:');
     const sampleOrders = await Order.find({}).limit(3);
-    sampleOrders.forEach((order, idx) => {
-      console.log(`   Sample Order ${idx + 1}:`);
+    sampleOrders.forEach((order, index) => {
+      console.log(`   Sample Order ${index + 1}:`);
       console.log('      Order ID:', order._id);
       console.log('      Order Number:', order.orderNumber);
       console.log('      Restaurant field:', order.restaurant);
@@ -447,190 +362,235 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
       console.log('      Vendor field:', order.vendor);
       console.log('      Vendor type:', typeof order.vendor);
       console.log('      Status:', order.status);
-      
-      // Check if this order matches
-      const restaurantMatch = order.restaurant && order.restaurant.toString() === restaurant._id.toString();
-      const vendorMatch = order.vendor && order.vendor.toString() === userId.toString();
-      console.log('      Matches restaurant?', restaurantMatch);
-      console.log('      Matches vendor?', vendorMatch);
+      console.log('      Matches restaurant?', order.restaurant?.toString() === restaurant._id.toString());
+      console.log('      Matches vendor?', order.vendor?.toString() === vendorId.toString());
     });
-
-    // Get all unique restaurant IDs
+    
     console.log('\n5. All Restaurant IDs in Orders:');
     const uniqueRestaurants = await Order.distinct('restaurant');
-    uniqueRestaurants.forEach(restId => {
-      const matches = restId && restId.toString() === restaurant._id.toString();
-      console.log(`      ${restId} ${matches ? '← MATCH!' : ''}`);
+    uniqueRestaurants.forEach(id => {
+      const isMatch = id.toString() === restaurant._id.toString();
+      console.log('      ' + id.toString() + (isMatch ? ' ← MATCH!' : ''));
     });
-
-    // Get all unique vendor IDs
+    
     console.log('\n6. All Vendor IDs in Orders:');
     const uniqueVendors = await Order.distinct('vendor');
-    uniqueVendors.forEach(vendId => {
-      if (vendId) {
-        const matches = vendId.toString() === userId.toString();
-        console.log(`      ${vendId} ${matches ? '← MATCH!' : ''}`);
-      } else {
+    uniqueVendors.forEach(id => {
+      if (!id) {
         console.log('      null (no vendor set)');
+      } else {
+        const isMatch = id.toString() === vendorId.toString();
+        console.log('      ' + id.toString() + (isMatch ? ' ← MATCH!' : ''));
       }
     });
-
-    // Build the query - USE VENDOR FIELD (the one that actually works!)
+    
     console.log('\n7. Building Final Query:');
-    const { page = 1, limit = 20, status } = req.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-
-    // Simply query by vendor ID - this is what links orders to this vendor
-    let query = { vendor: userId };
-
-    if (status && status !== 'all') {
-      query.status = status.toLowerCase();
-    }
-
+    const query = { vendor: vendorId.toString() };
     console.log('   Query:', JSON.stringify(query, null, 2));
-
-    // Execute query
+    
     console.log('\n8. Executing Query:');
     const orders = await Order.find(query)
       .populate('customer', 'name email phone')
-      .populate('restaurant', 'name address phone image profileImageUrl')
-      .populate('driver', 'name phone email')
+      .populate('restaurant', 'name')
+      .populate('driver', 'name phone')
       .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-
-    const total = await Order.countDocuments(query);
-
+      .limit(50);
+    
     console.log('   ✓ Query executed');
     console.log('   Orders found:', orders.length);
-    console.log('   Total matching orders:', total);
-
+    console.log('   Total matching orders:', orders.length);
+    
     if (orders.length > 0) {
       console.log('\n9. First Order Details:');
       console.log('   Order Number:', orders[0].orderNumber);
       console.log('   Status:', orders[0].status);
       console.log('   Total:', orders[0].total);
     }
-
+    
     console.log('\n========================================');
     console.log('=== END DEBUG ===');
     console.log('========================================\n');
-
+    
     res.json({
       success: true,
       orders: orders,
-      pagination: {
-        current: parseInt(page),
-        total: Math.ceil(total / parseInt(limit)),
-        totalOrders: total
-      },
-      debug: process.env.NODE_ENV === 'development' ? {
-        restaurantId: restaurant._id.toString(),
-        restaurantName: restaurant.name,
-        totalOrdersInDB: totalOrders,
-        approachResults,
-        queryUsed: query
-      } : undefined
+      restaurant: {
+        _id: restaurant._id,
+        name: restaurant.name
+      }
     });
-
+    
   } catch (error) {
-    console.error('Vendor orders fetch error:', error);
+    console.error('Get orders error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch vendor orders',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: 'Failed to fetch orders',
+      error: error.message
     });
   }
 });
 
-router.patch('/orders/:id/status', authMiddleware, vendorMiddleware, async (req, res) => {
+// ===== ORDER STATUS UPDATE ROUTES (NEW - FIXES THE 404 ERROR) =====
+
+// Update order status - PUT method
+router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
-    const { status } = req.body;
-    const orderId = req.params.id;
-
-    if (!status) {
-      return res.status(400).json({ success: false, message: 'Status is required' });
-    }
-
-    if (!mongoose.isValidObjectId(orderId)) {
-      return res.status(400).json({ success: false, message: 'Invalid order ID format' });
-    }
-
-    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'cancelled'];
+    console.log(`📝 PUT /api/vendors/orders/${req.params.orderId}/status`);
+    console.log('New status:', req.body.status);
     
-    if (!validStatuses.includes(status.toLowerCase())) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid status. Valid statuses: ${validStatuses.join(', ')}`
-      });
-    }
-
-    const order = await Order.findById(orderId);
-    
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
-    }
-
-    const userId = req.user._id || req.user.id;
-    const restaurant = await Restaurant.findOne({ _id: order.restaurant, owner: userId });
-
-    if (!restaurant) {
-      return res.status(403).json({
-        success: false,
-        message: 'You can only update orders for your restaurant'
-      });
-    }
-
-    order.status = status.toLowerCase();
-    await order.save();
-
-    res.json({
-      success: true,
-      message: 'Order status updated successfully',
-      order: order
-    });
-
-  } catch (error) {
-    console.error('Order status update error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update order status',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-    });
-  }
-});
-
-router.post('/orders/:orderId/request-driver', authMiddleware, vendorMiddleware, async (req, res) => {
-  try {
     const { orderId } = req.params;
+    const { status } = req.body;
+    const vendorId = req.user._id;
+
+    // Validate status
+    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid status. Must be one of: ' + validStatuses.join(', ')
+      });
+    }
+
+    // Find the order
     const order = await Order.findById(orderId);
     
     if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Order not found' 
+      });
     }
-    
-    const restaurant = await Restaurant.findOne({ _id: order.restaurant, owner: req.user._id });
+
+    // Verify this vendor owns the restaurant for this order
+    const restaurant = await Restaurant.findOne({ owner: vendorId });
     
     if (!restaurant) {
-      return res.status(403).json({ success: false, message: 'Not authorized for this order' });
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Restaurant not found for this vendor' 
+      });
     }
     
-    if (order.driver) {
-      return res.status(400).json({ success: false, message: 'Driver already assigned to this order' });
-    }
+    // Check if order belongs to this vendor's restaurant
+    const orderRestaurantId = order.restaurant.toString();
+    const vendorRestaurantId = restaurant._id.toString();
     
-    order.status = 'ready';
+    if (orderRestaurantId !== vendorRestaurantId) {
+      console.log(`❌ Authorization failed:`);
+      console.log(`   Order restaurant: ${orderRestaurantId}`);
+      console.log(`   Vendor restaurant: ${vendorRestaurantId}`);
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Not authorized to update this order' 
+      });
+    }
+
+    // Update the status
+    const oldStatus = order.status;
+    order.status = status;
     await order.save();
-    
+
+    console.log(`✅ Order ${orderId} status updated from ${oldStatus} to ${status}`);
+
     res.json({
       success: true,
-      message: 'Order is now available for drivers',
-      order
+      message: `Order status updated to ${status}`,
+      order: {
+        _id: order._id,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        previousStatus: oldStatus
+      }
     });
-    
+
   } catch (error) {
-    console.error('Request driver error:', error);
-    res.status(500).json({ success: false, message: 'Error requesting driver', error: error.message });
+    console.error('❌ Update order status error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update order status',
+      error: error.message 
+    });
+  }
+});
+
+// Update order status - PATCH method (alternative)
+router.patch('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    console.log(`📝 PATCH /api/vendors/orders/${req.params.orderId}/status`);
+    console.log('New status:', req.body.status);
+    
+    const { orderId } = req.params;
+    const { status } = req.body;
+    const vendorId = req.user._id;
+
+    // Validate status
+    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid status. Must be one of: ' + validStatuses.join(', ')
+      });
+    }
+
+    // Find the order
+    const order = await Order.findById(orderId);
+    
+    if (!order) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Order not found' 
+      });
+    }
+
+    // Verify this vendor owns the restaurant for this order
+    const restaurant = await Restaurant.findOne({ owner: vendorId });
+    
+    if (!restaurant) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Restaurant not found for this vendor' 
+      });
+    }
+    
+    // Check if order belongs to this vendor's restaurant
+    const orderRestaurantId = order.restaurant.toString();
+    const vendorRestaurantId = restaurant._id.toString();
+    
+    if (orderRestaurantId !== vendorRestaurantId) {
+      console.log(`❌ Authorization failed:`);
+      console.log(`   Order restaurant: ${orderRestaurantId}`);
+      console.log(`   Vendor restaurant: ${vendorRestaurantId}`);
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Not authorized to update this order' 
+      });
+    }
+
+    // Update the status
+    const oldStatus = order.status;
+    order.status = status;
+    await order.save();
+
+    console.log(`✅ Order ${orderId} status updated from ${oldStatus} to ${status}`);
+
+    res.json({
+      success: true,
+      message: `Order status updated to ${status}`,
+      order: {
+        _id: order._id,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        previousStatus: oldStatus
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Update order status error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update order status',
+      error: error.message 
+    });
   }
 });
 
