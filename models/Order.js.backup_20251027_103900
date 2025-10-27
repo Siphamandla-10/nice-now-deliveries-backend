@@ -1,4 +1,4 @@
-// models/Order.js - COMPLETE FIX with driverEarnings field
+// models/Order.js - CORRECTED Order Model with Fixed Financial Tracking
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
@@ -102,7 +102,7 @@ const orderSchema = new mongoose.Schema({
     // Customer-facing prices
     subtotal: {
       type: Number,
-      default: 0,
+      required: true,
       min: 0
     },
     deliveryFee: {
@@ -169,14 +169,6 @@ const orderSchema = new mongoose.Schema({
     }
   },
   
-  // CRITICAL FIX: Add driverEarnings field at root level
-  // This is what the frontend reads for driver earnings display
-  driverEarnings: {
-    type: Number,
-    default: 0,
-    min: 0
-  },
-  
   // Order Status
   status: {
     type: String,
@@ -189,19 +181,11 @@ const orderSchema = new mongoose.Schema({
       'picked_up',        // Driver picked up food
       'on_the_way',       // Driver delivering
       'delivered',        // Order delivered
-      'completed',        // Same as delivered (alias)
       'cancelled',        // Order cancelled
       'refunded'          // Order refunded
     ],
     default: 'pending',
     index: true
-  },
-  
-  // Driver-specific status (for driver app)
-  driverStatus: {
-    type: String,
-    enum: ['accepted', 'picked_up', 'on_the_way', 'delivered'],
-    default: 'accepted'
   },
   
   // Payment Information
@@ -249,10 +233,6 @@ const orderSchema = new mongoose.Schema({
       default: null
     },
     deliveredAt: {
-      type: Date,
-      default: null
-    },
-    completedAt: {
       type: Date,
       default: null
     },
@@ -356,10 +336,10 @@ orderSchema.virtual('isActive').get(function() {
   return ['pending', 'confirmed', 'preparing', 'ready', 'driver_assigned', 'picked_up', 'on_the_way'].includes(this.status);
 });
 
-// PRE-SAVE MIDDLEWARE - FIXED CALCULATION LOGIC + DRIVER EARNINGS
+// PRE-SAVE MIDDLEWARE - FIXED CALCULATION LOGIC
 orderSchema.pre('save', function(next) {
   // Only calculate on new orders or when pricing changes
-  if (this.isNew || this.isModified('pricing.subtotal') || this.isModified('pricing.deliveryFee') || this.isModified('pricing.serviceFee') || this.isModified('pricing.driverPayout')) {
+  if (this.isNew || this.isModified('pricing.subtotal') || this.isModified('pricing.deliveryFee') || this.isModified('pricing.serviceFee')) {
     
     const subtotal = this.pricing.subtotal || 0;
     const deliveryFee = this.pricing.deliveryFee || 0;
@@ -399,15 +379,10 @@ orderSchema.pre('save', function(next) {
       serviceFee +                        // Service fee
       (deliveryFee - driverPayout);      // Delivery fee minus what we pay driver
     
-    // STEP 6: CRITICAL FIX - Set driverEarnings field
-    // This is what the frontend/driver app reads
-    this.driverEarnings = this.pricing.driverPayout;
-    
     console.log('✅ Financial breakdown calculated:', {
       customerTotal: this.pricing.total,
       restaurantGets: this.pricing.restaurantPayout,
-      driverGets: this.pricing.driverPayout,
-      driverEarnings: this.driverEarnings, // This should match driverPayout
+      driverGets: driverPayout,
       platformGets: this.pricing.platformProfit,
       platformCommission: this.pricing.platformCommission
     });
@@ -418,19 +393,9 @@ orderSchema.pre('save', function(next) {
     }
   }
   
-  // Sync completed status
-  if (this.status === 'delivered' && !this.timestamps.completedAt) {
-    this.timestamps.completedAt = this.timestamps.deliveredAt || new Date();
-  }
-  
   // Generate order number if new
   if (this.isNew && !this.orderNumber) {
-    const date = new Date();
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const random = Math.floor(Math.random() * 10000);
-    this.orderNumber = `ORD-${year}${month}${day}-${random}`;
+    this.orderNumber = `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
   }
   
   next();
@@ -440,19 +405,6 @@ orderSchema.pre('save', function(next) {
 orderSchema.methods.updateStatus = async function(newStatus) {
   this.status = newStatus;
   
-  // Also update driverStatus if applicable
-  const driverStatusMap = {
-    'driver_assigned': 'accepted',
-    'picked_up': 'picked_up',
-    'on_the_way': 'on_the_way',
-    'delivered': 'delivered',
-    'completed': 'delivered'
-  };
-  
-  if (driverStatusMap[newStatus]) {
-    this.driverStatus = driverStatusMap[newStatus];
-  }
-  
   // Update corresponding timestamp
   const timestampMap = {
     'confirmed': 'confirmedAt',
@@ -460,7 +412,6 @@ orderSchema.methods.updateStatus = async function(newStatus) {
     'ready': 'readyAt',
     'picked_up': 'pickedUpAt',
     'delivered': 'deliveredAt',
-    'completed': 'completedAt',
     'cancelled': 'cancelledAt'
   };
   
@@ -475,7 +426,6 @@ orderSchema.methods.updateStatus = async function(newStatus) {
 orderSchema.methods.assignDriver = async function(driverId) {
   this.driver = driverId;
   this.status = 'driver_assigned';
-  this.driverStatus = 'accepted';
   return this.save();
 };
 
@@ -536,12 +486,6 @@ orderSchema.methods.getFinancialBreakdown = function() {
       totalPlatformProfit: this.pricing.platformProfit
     },
     
-    // Driver info
-    driverInfo: {
-      earnings: this.driverEarnings,
-      payout: this.pricing.driverPayout
-    },
-    
     // Verification (money in = money out)
     verification: {
       moneyIn: this.pricing.total,
@@ -583,7 +527,7 @@ orderSchema.statics.findForDriver = function(driverId, status = null) {
 // STATIC: Get platform statistics
 orderSchema.statics.getPlatformStats = async function(startDate, endDate) {
   const match = {
-    status: { $in: ['delivered', 'completed'] },
+    status: 'delivered',
     'timestamps.deliveredAt': {
       $gte: startDate,
       $lte: endDate
@@ -601,7 +545,6 @@ orderSchema.statics.getPlatformStats = async function(startDate, endDate) {
         totalServiceFees: { $sum: '$pricing.serviceFee' },
         totalDeliveryFees: { $sum: '$pricing.deliveryFee' },
         totalDriverPayouts: { $sum: '$pricing.driverPayout' },
-        totalDriverEarnings: { $sum: '$driverEarnings' },
         totalPlatformProfit: { $sum: '$pricing.platformProfit' },
         totalRestaurantPayouts: { $sum: '$pricing.restaurantPayout' }
       }

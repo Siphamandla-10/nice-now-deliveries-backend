@@ -1,616 +1,555 @@
-// routes/orders.js - Enhanced with Customer & Items Display
+// routes/orders.js - Complete Order Routes with Financial Calculations
 const express = require('express');
 const router = express.Router();
-const mongoose = require('mongoose');
-const { authMiddleware } = require('../middleware/auth');
 const Order = require('../models/Order');
 const Restaurant = require('../models/Restaurant');
+const MenuItem = require('../models/MenuItem');
+const Driver = require('../models/Driver');
+const User = require('../models/User');
+const { auth, isDriver, isVendor, isAdmin } = require('../middleware/auth');
 
-// Test route
-router.get('/test-debug', (req, res) => {
-  console.log('ENHANCED ROUTES LOADED SUCCESSFULLY');
-  res.json({ message: 'Enhanced debug routes are working!', timestamp: new Date() });
-});
-
-// Generate order number
-const generateOrderNumber = () => {
-  const date = new Date();
-  const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
-  const randomNum = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
-  return `ORD-${dateStr}-${randomNum}`;
-};
-
-// GET /api/orders/my-orders - Get user's orders with full customer and items info
-router.get('/my-orders', authMiddleware, async (req, res) => {
-  console.log('=== GET MY ORDERS DEBUG ===');
-  console.log('Request received for /my-orders');
-  
+// ==========================================
+// CREATE ORDER
+// ==========================================
+router.post('/create', auth, async (req, res) => {
   try {
-    console.log('User info:', {
-      id: req.user._id || req.user.id,
-      name: req.user.name,
-      email: req.user.email,
-      userType: req.user.userType
-    });
+    const {
+      restaurantId,
+      items,
+      deliveryAddress,
+      paymentMethod,
+      specialInstructions,
+      couponCode
+    } = req.body;
 
-    const { page = 1, limit = 20, status } = req.query;
-    const skip = (page - 1) * limit;
-    
-    const userId = req.user._id || req.user.id;
-    const query = { customer: userId };
-    
-    if (status) {
-      query.status = status;
+    console.log('📝 Creating new order:', { restaurantId, userId: req.user.id, itemCount: items.length });
+
+    // 1. Validate restaurant exists and is active
+    const restaurant = await Restaurant.findById(restaurantId);
+    if (!restaurant) {
+      return res.status(404).json({ error: 'Restaurant not found' });
     }
-    
-    console.log('Database query:', JSON.stringify(query, null, 2));
+    if (!restaurant.isActive || restaurant.status !== 'active') {
+      return res.status(400).json({ error: 'Restaurant is not accepting orders' });
+    }
 
-    // Fetch orders with FULL customer and items information
-    const orders = await Order.find(query)
-      .populate({
-        path: 'restaurant',
-        select: 'name address phone image coverImage'
-      })
-      .populate({
-        path: 'customer',
-        select: 'name email phone profilePicture addresses'
-      })
-      .populate({
-        path: 'driver',
-        select: 'name phone'
-      })
-      .populate({
-        path: 'items.menuItem',
-        select: 'name description price image category'
-      })
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
-      .skip(skip);
+    // 2. Validate and calculate items
+    let subtotal = 0;
+    const orderItems = [];
 
-    console.log('Query executed successfully');
-    console.log('Found orders:', orders.length);
-    
-    // Enhance the orders with formatted data
-    const enhancedOrders = orders.map(order => {
-      const orderObj = order.toObject();
+    for (const item of items) {
+      const menuItem = await MenuItem.findById(item.menuItemId);
       
-      // Format customer info
-      orderObj.customerInfo = {
-        id: orderObj.customer._id,
-        name: orderObj.customer.name,
-        email: orderObj.customer.email,
-        phone: orderObj.customer.phone,
-        profilePicture: orderObj.customer.profilePicture?.url || null
-      };
+      if (!menuItem) {
+        return res.status(404).json({ error: `Menu item ${item.menuItemId} not found` });
+      }
       
-      // Format items with details
-      orderObj.itemsDetails = orderObj.items.map(item => ({
-        name: item.name,
+      if (!menuItem.isAvailable) {
+        return res.status(400).json({ error: `${menuItem.name} is not available` });
+      }
+
+      const itemSubtotal = menuItem.price * item.quantity;
+      subtotal += itemSubtotal;
+
+      orderItems.push({
+        menuItem: menuItem._id,
+        name: menuItem.name,
+        price: menuItem.price,
         quantity: item.quantity,
-        price: item.price,
-        itemTotal: item.itemTotal || (item.price * item.quantity),
-        specialInstructions: item.specialInstructions || null,
-        menuItemDetails: item.menuItem ? {
-          id: item.menuItem._id,
-          name: item.menuItem.name,
-          description: item.menuItem.description,
-          category: item.menuItem.category,
-          image: item.menuItem.image?.url || null
-        } : null
-      }));
-      
-      // Add order summary
-      orderObj.orderSummary = {
-        itemCount: orderObj.items.length,
-        totalItems: orderObj.items.reduce((sum, item) => sum + item.quantity, 0),
-        subtotal: orderObj.subtotal,
-        deliveryFee: orderObj.deliveryFee,
-        tax: orderObj.tax,
-        total: orderObj.total
-      };
-      
-      return orderObj;
-    });
-
-    const total = await Order.countDocuments(query);
-
-    const response = {
-      success: true,
-      orders: enhancedOrders,
-      pagination: {
-        current: parseInt(page),
-        total: Math.ceil(total / limit),
-        hasMore: skip + orders.length < total
-      }
-    };
-
-    console.log('Sending response with', enhancedOrders.length, 'orders');
-    console.log('==========================');
-    
-    res.json(response);
-
-  } catch (error) {
-    console.error('GET MY ORDERS ERROR:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch orders',
-      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
-    });
-  }
-});
-
-// GET /api/orders - Get all orders (for vendors and drivers) WITH CUSTOMER & ITEMS
-router.get('/', authMiddleware, async (req, res) => {
-  try {
-    console.log('Getting all orders for user type:', req.user.userType);
-    
-    const { status, page = 1, limit = 20 } = req.query;
-    const skip = (page - 1) * limit;
-
-    let query = {};
-    
-    // Filter by user role
-    if (req.user.userType === 'vendor') {
-      try {
-        const restaurants = await Restaurant.find({ owner: req.user._id }).select('_id');
-        query.restaurant = { $in: restaurants.map(r => r._id) };
-      } catch (error) {
-        query.vendor = req.user._id;
-      }
-    } else if (req.user.userType === 'customer') {
-      query.customer = req.user._id;
-    } else if (req.user.userType === 'driver') {
-      query.driver = req.user._id;
+        specialInstructions: item.specialInstructions || '',
+        subtotal: itemSubtotal
+      });
     }
 
-    if (status && status !== 'all') {
-      query.status = status;
-    }
-
-    console.log('Query:', JSON.stringify(query, null, 2));
-
-    // Fetch with FULL population
-    const orders = await Order.find(query)
-      .populate({
-        path: 'restaurant',
-        select: 'name address phone image coverImage cuisine'
-      })
-      .populate({
-        path: 'customer',
-        select: 'name email phone profilePicture'
-      })
-      .populate({
-        path: 'driver',
-        select: 'name email phone'
-      })
-      .populate({
-        path: 'items.menuItem',
-        select: 'name description price image category'
-      })
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
-      .skip(skip);
-
-    // Enhance orders with formatted customer and items data
-    const enhancedOrders = orders.map(order => {
-      const orderObj = order.toObject();
-      
-      // Customer details
-      if (orderObj.customer) {
-        orderObj.customerDetails = {
-          id: orderObj.customer._id,
-          name: orderObj.customer.name,
-          email: orderObj.customer.email,
-          phone: orderObj.customer.phone || orderObj.customerPhone,
-          profilePicture: orderObj.customer.profilePicture?.url || null
-        };
-      }
-      
-      // Items with full details
-      orderObj.itemsList = orderObj.items.map(item => ({
-        itemId: item._id,
-        name: item.name,
-        quantity: item.quantity,
-        unitPrice: item.price,
-        totalPrice: item.itemTotal || (item.price * item.quantity),
-        specialInstructions: item.specialInstructions,
-        menuItem: item.menuItem ? {
-          id: item.menuItem._id,
-          name: item.menuItem.name,
-          description: item.menuItem.description,
-          category: item.menuItem.category,
-          image: item.menuItem.image?.url || null
-        } : null
-      }));
-      
-      // Order totals
-      orderObj.totals = {
-        itemCount: orderObj.items.length,
-        totalQuantity: orderObj.items.reduce((sum, item) => sum + item.quantity, 0),
-        subtotal: orderObj.subtotal,
-        deliveryFee: orderObj.deliveryFee,
-        tax: orderObj.tax,
-        grandTotal: orderObj.total
-      };
-      
-      return orderObj;
-    });
-
-    const total = await Order.countDocuments(query);
-
-    console.log('Found', enhancedOrders.length, 'orders with customer & items');
-
-    res.json({
-      success: true,
-      orders: enhancedOrders,
-      pagination: {
-        current: parseInt(page),
-        total: Math.ceil(total / limit),
-        hasMore: skip + orders.length < total
-      }
-    });
-  } catch (error) {
-    console.error('Get orders error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to fetch orders', 
-      error: error.message 
-    });
-  }
-});
-
-// POST /api/orders - Create new order
-router.post('/', authMiddleware, async (req, res) => {
-  console.log('=== ORDER CREATION DEBUG ===');
-  
-  try {
-    const { restaurantId, items, deliveryAddress, paymentMethod, notes } = req.body;
-    
-    if (!restaurantId || !items || !Array.isArray(items) || items.length === 0) {
+    // 3. Check minimum order amount
+    if (subtotal < restaurant.minimumOrder) {
       return res.status(400).json({
-        success: false,
-        message: 'Restaurant ID and items are required'
+        error: `Minimum order amount is R${restaurant.minimumOrder}`,
+        minimumOrder: restaurant.minimumOrder,
+        currentTotal: subtotal
       });
     }
 
-    if (req.user.userType !== 'customer') {
-      return res.status(403).json({
-        success: false,
-        message: 'Only customers can create orders'
-      });
+    // 4. Calculate fees
+    const deliveryFee = restaurant.deliveryFee || 25;
+    const serviceFee = 5; // Platform service fee
+    let discount = 0;
+
+    // Apply coupon if provided (implement your coupon logic)
+    if (couponCode) {
+      // TODO: Implement coupon validation and discount calculation
+      console.log('🎟️ Coupon code provided:', couponCode);
     }
 
-    let restaurant;
-    try {
-      restaurant = await Restaurant.findById(restaurantId);
-      if (!restaurant) {
-        return res.status(404).json({
-          success: false,
-          message: 'Restaurant not found'
-        });
-      }
-    } catch (error) {
-      restaurant = {
-        _id: restaurantId,
-        name: req.body.restaurantName || 'Restaurant',
-        owner: req.body.vendor || restaurantId,
-        deliveryFee: 2.99
-      };
-    }
-
-    const subtotal = items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    const deliveryFee = restaurant.deliveryFee || 2.99;
-    const tax = Math.round(subtotal * 0.10 * 100) / 100;
-    const total = subtotal + deliveryFee + tax;
-
-    const orderData = {
-      orderNumber: generateOrderNumber(),
-      customer: req.user._id || req.user.id,
-      customerName: req.user.name,
-      customerPhone: req.user.phone,
+    // 5. Create order
+    const order = new Order({
+      user: req.user.id,
       restaurant: restaurantId,
-      vendor: restaurant.owner,
-      
-      items: items.map(item => ({
-        name: item.name,
-        menuItem: item.menuItemId,
-        quantity: item.quantity,
-        price: item.price,
-        itemTotal: item.price * item.quantity,
-        specialInstructions: item.specialInstructions || ''
-      })),
-      
-      subtotal: subtotal,
-      deliveryFee: deliveryFee,
-      tax: tax,
-      total: total,
-      
+      items: orderItems,
       deliveryAddress: {
-        street: deliveryAddress?.street || 'Default Street',
-        city: deliveryAddress?.city || 'Default City', 
-        state: deliveryAddress?.state || 'Default State',
-        zipCode: deliveryAddress?.zipCode || '00000',
-        coordinates: {
-          latitude: deliveryAddress?.coordinates?.latitude || -26.2041,
-          longitude: deliveryAddress?.coordinates?.longitude || 28.0473
-        }
+        street: deliveryAddress.street,
+        city: deliveryAddress.city,
+        state: deliveryAddress.state,
+        zipCode: deliveryAddress.zipCode,
+        country: deliveryAddress.country || 'South Africa',
+        location: deliveryAddress.location,
+        instructions: deliveryAddress.instructions || '',
+        contactPhone: deliveryAddress.contactPhone || req.user.phone
       },
-      
-      paymentMethod: paymentMethod || 'card',
-      paymentStatus: 'pending',
-      notes: notes || '',
-      specialInstructions: req.body.specialInstructions || '',
-      status: 'pending'
-    };
+      pricing: {
+        subtotal,
+        deliveryFee,
+        serviceFee,
+        discount,
+        platformCommissionRate: 20, // 20% commission
+        driverPayout: 20 // R20 for driver
+      },
+      payment: {
+        method: paymentMethod,
+        status: paymentMethod === 'cash' ? 'pending' : 'pending'
+      },
+      specialInstructions: specialInstructions || '',
+      estimatedPreparationTime: 30,
+      estimatedDeliveryTime: 45
+    });
 
-    const order = new Order(orderData);
-    const savedOrder = await order.save();
+    await order.save();
 
-    // Populate with customer and items details
-    const populatedOrder = await Order.findById(savedOrder._id)
-      .populate('customer', 'name email phone profilePicture')
-      .populate('restaurant', 'name address phone')
-      .populate('items.menuItem', 'name description price image category');
+    // 6. Update restaurant stats
+    restaurant.totalOrders += 1;
+    await restaurant.save();
+
+    // 7. Populate order for response
+    await order.populate('restaurant', 'name address contact images');
+    await order.populate('items.menuItem', 'name images');
+
+    console.log('✅ Order created successfully:', order.orderNumber);
+    console.log('💰 Financial breakdown:', order.getFinancialBreakdown());
 
     res.status(201).json({
       success: true,
-      message: 'Order created successfully',
-      order: populatedOrder
+      message: 'Order placed successfully',
+      order,
+      financialBreakdown: order.getFinancialBreakdown()
     });
 
   } catch (error) {
-    console.error('Order creation error:', error);
-    
-    if (error.name === 'ValidationError') {
-      const errors = Object.keys(error.errors).map(key => ({
-        field: key,
-        message: error.errors[key].message
-      }));
-      
-      return res.status(400).json({
-        success: false,
-        message: 'Validation error',
-        errors: errors
-      });
-    }
-    
-    res.status(500).json({
-      success: false,
-      message: 'Error creating order',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    console.error('❌ Error creating order:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// GET /api/orders/:id - Get order by ID WITH FULL DETAILS
-router.get('/:id', authMiddleware, async (req, res) => {
+// ==========================================
+// GET USER'S ORDERS
+// ==========================================
+router.get('/my-orders', auth, async (req, res) => {
   try {
-    console.log('Getting order by ID:', req.params.id);
-    
-    const order = await Order.findById(req.params.id)
-      .populate({
-        path: 'restaurant',
-        select: 'name address phone image coverImage cuisine'
-      })
-      .populate({
-        path: 'customer',
-        select: 'name email phone profilePicture addresses'
-      })
-      .populate({
-        path: 'driver',
-        select: 'name phone'
-      })
-      .populate({
-        path: 'items.menuItem',
-        select: 'name description price image category'
-      });
+    const { status, limit = 20, page = 1 } = req.query;
 
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
+    const query = { user: req.user.id };
+    if (status) query.status = status;
 
-    // Check access permissions
-    const userId = req.user._id || req.user.id;
-    const canAccess = order.customer._id.toString() === userId.toString() ||
-                     order.driver?._id.toString() === userId.toString() ||
-                     req.user.userType === 'vendor';
+    const orders = await Order.find(query)
+      .populate('restaurant', 'name address images contact')
+      .populate('driver', 'name phone rating')
+      .populate('items.menuItem', 'name images')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
 
-    if (!canAccess) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied'
-      });
-    }
+    const total = await Order.countDocuments(query);
 
-    // Enhance order with formatted data
-    const orderObj = order.toObject();
-    
-    orderObj.customerInfo = {
-      id: orderObj.customer._id,
-      name: orderObj.customer.name,
-      email: orderObj.customer.email,
-      phone: orderObj.customer.phone,
-      profilePicture: orderObj.customer.profilePicture?.url || null
-    };
-    
-    orderObj.itemsDetails = orderObj.items.map(item => ({
-      name: item.name,
-      quantity: item.quantity,
-      unitPrice: item.price,
-      totalPrice: item.itemTotal || (item.price * item.quantity),
-      specialInstructions: item.specialInstructions,
-      menuItem: item.menuItem ? {
-        id: item.menuItem._id,
-        name: item.menuItem.name,
-        description: item.menuItem.description,
-        category: item.menuItem.category,
-        image: item.menuItem.image?.url || null
-      } : null
-    }));
-    
-    console.log('Order found with customer:', orderObj.customerInfo.name);
-    console.log('Total items:', orderObj.items.length);
+    res.json({
+      success: true,
+      orders,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching orders:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// GET ACTIVE ORDERS FOR USER
+// ==========================================
+router.get('/active', auth, async (req, res) => {
+  try {
+    const orders = await Order.findActiveForUser(req.user.id);
     
     res.json({
       success: true,
-      order: orderObj
+      count: orders.length,
+      orders
     });
+
   } catch (error) {
-    console.error('Get order error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch order'
-    });
+    console.error('❌ Error fetching active orders:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// PATCH /api/orders/:id/status - Update order status
-router.patch('/:id/status', authMiddleware, async (req, res) => {
+// ==========================================
+// GET SINGLE ORDER BY ID
+// ==========================================
+router.get('/:orderId', auth, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.orderId)
+      .populate('restaurant', 'name address contact images')
+      .populate('driver', 'name phone rating vehicle')
+      .populate('user', 'name email phone')
+      .populate('items.menuItem', 'name images category');
+
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Check authorization
+    const isOwner = order.user._id.toString() === req.user.id;
+    const isRestaurantOwner = order.restaurant.owner && order.restaurant.owner.toString() === req.user.id;
+    const isOrderDriver = order.driver && order.driver._id.toString() === req.user.id;
+    const isAdminUser = req.user.role === 'admin';
+
+    if (!isOwner && !isRestaurantOwner && !isOrderDriver && !isAdminUser) {
+      return res.status(403).json({ error: 'Not authorized to view this order' });
+    }
+
+    res.json({
+      success: true,
+      order,
+      financialBreakdown: order.getFinancialBreakdown()
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching order:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// UPDATE ORDER STATUS
+// ==========================================
+router.patch('/:orderId/status', auth, async (req, res) => {
   try {
     const { status } = req.body;
-    const orderId = req.params.id;
-
-    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'completed', 'cancelled'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid status'
-      });
-    }
-
-    const order = await Order.findById(orderId)
-      .populate('customer', 'name email phone')
-      .populate('items.menuItem', 'name price');
-      
+    
+    const order = await Order.findById(req.params.orderId);
     if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
+      return res.status(404).json({ error: 'Order not found' });
     }
 
-    order.status = status;
-    order[`${status}At`] = new Date();
-    await order.save();
+    // Authorization check based on status change
+    const canUpdate = await canUpdateOrderStatus(order, req.user, status);
+    if (!canUpdate.allowed) {
+      return res.status(403).json({ error: canUpdate.reason });
+    }
 
-    console.log('Order status updated for customer:', order.customer.name);
+    await order.updateStatus(status);
+    await order.populate('restaurant driver user');
+
+    console.log(`✅ Order ${order.orderNumber} status updated to: ${status}`);
 
     res.json({
       success: true,
-      message: 'Order status updated',
+      message: `Order status updated to ${status}`,
       order
     });
+
   } catch (error) {
-    console.error('Update order status error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update order status'
-    });
+    console.error('❌ Error updating order status:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// POST /api/orders/:orderId/request-driver
-router.post('/:orderId/request-driver', authMiddleware, async (req, res) => {
+// Helper function to check if user can update order status
+async function canUpdateOrderStatus(order, user, newStatus) {
+  // Admins can do anything
+  if (user.role === 'admin') {
+    return { allowed: true };
+  }
+
+  // Restaurant owner can confirm/prepare/ready
+  const restaurant = await Restaurant.findById(order.restaurant);
+  const isRestaurantOwner = restaurant.owner && restaurant.owner.toString() === user.id;
+  
+  if (isRestaurantOwner && ['confirmed', 'preparing', 'ready'].includes(newStatus)) {
+    return { allowed: true };
+  }
+
+  // Driver can update pickup/delivery statuses
+  const isDriver = order.driver && order.driver.toString() === user.id;
+  if (isDriver && ['picked_up', 'on_the_way', 'delivered'].includes(newStatus)) {
+    return { allowed: true };
+  }
+
+  // Customer can cancel pending orders
+  const isCustomer = order.user.toString() === user.id;
+  if (isCustomer && newStatus === 'cancelled' && order.status === 'pending') {
+    return { allowed: true };
+  }
+
+  return { allowed: false, reason: 'Not authorized to update this order status' };
+}
+
+// ==========================================
+// ASSIGN DRIVER TO ORDER
+// ==========================================
+router.patch('/:orderId/assign-driver', auth, async (req, res) => {
   try {
-    const { orderId } = req.params;
+    const { driverId } = req.body;
     
-    const order = await Order.findById(orderId)
-      .populate('customer', 'name phone')
-      .populate('items.menuItem', 'name');
-      
+    const order = await Order.findById(req.params.orderId);
     if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found' });
+      return res.status(404).json({ error: 'Order not found' });
     }
+
+    // Check if driver exists and is available
+    const driver = await Driver.findById(driverId);
+    if (!driver) {
+      return res.status(404).json({ error: 'Driver not found' });
+    }
+    if (!driver.isActive || driver.status !== 'available') {
+      return res.status(400).json({ error: 'Driver is not available' });
+    }
+
+    await order.assignDriver(driverId);
     
-    let restaurant;
-    try {
-      restaurant = await Restaurant.findOne({ 
-        _id: order.restaurant, 
-        owner: req.user._id 
+    // Update driver status
+    driver.status = 'busy';
+    await driver.save();
+
+    await order.populate('driver restaurant user');
+
+    console.log(`✅ Driver ${driver.name} assigned to order ${order.orderNumber}`);
+
+    res.json({
+      success: true,
+      message: 'Driver assigned successfully',
+      order
+    });
+
+  } catch (error) {
+    console.error('❌ Error assigning driver:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// CANCEL ORDER
+// ==========================================
+router.post('/:orderId/cancel', auth, async (req, res) => {
+  try {
+    const { reason } = req.body;
+    
+    const order = await Order.findById(req.params.orderId);
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Check if order can be cancelled
+    if (!['pending', 'confirmed'].includes(order.status)) {
+      return res.status(400).json({ 
+        error: 'Order cannot be cancelled at this stage',
+        currentStatus: order.status 
       });
-    } catch (error) {
-      if (order.vendor && order.vendor.toString() === req.user._id.toString()) {
-        restaurant = { _id: order.restaurant };
+    }
+
+    // Determine who is cancelling
+    let cancelledBy = 'user';
+    if (req.user.role === 'admin') cancelledBy = 'admin';
+    
+    const restaurant = await Restaurant.findById(order.restaurant);
+    if (restaurant.owner && restaurant.owner.toString() === req.user.id) {
+      cancelledBy = 'restaurant';
+    }
+
+    // Calculate refund (full refund if cancelled early)
+    const refundAmount = order.status === 'pending' ? order.pricing.total : 0;
+
+    await order.cancelOrder(reason, cancelledBy, refundAmount);
+    await order.populate('restaurant user driver');
+
+    console.log(`✅ Order ${order.orderNumber} cancelled by ${cancelledBy}`);
+
+    res.json({
+      success: true,
+      message: 'Order cancelled successfully',
+      refundAmount,
+      order
+    });
+
+  } catch (error) {
+    console.error('❌ Error cancelling order:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// ADD RATING TO ORDER
+// ==========================================
+router.post('/:orderId/rate', auth, async (req, res) => {
+  try {
+    const { food, delivery, review } = req.body;
+    
+    const order = await Order.findById(req.params.orderId);
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Only customer can rate
+    if (order.user.toString() !== req.user.id) {
+      return res.status(403).json({ error: 'Only customer can rate the order' });
+    }
+
+    // Order must be delivered
+    if (order.status !== 'delivered') {
+      return res.status(400).json({ error: 'Can only rate delivered orders' });
+    }
+
+    // Check if already rated
+    if (order.rating.reviewedAt) {
+      return res.status(400).json({ error: 'Order already rated' });
+    }
+
+    await order.addRating({ food, delivery, review });
+
+    // Update restaurant rating
+    const restaurant = await Restaurant.findById(order.restaurant);
+    const avgRating = (restaurant.rating * restaurant.totalRatings + food) / (restaurant.totalRatings + 1);
+    restaurant.rating = avgRating;
+    restaurant.totalRatings += 1;
+    await restaurant.save();
+
+    // Update driver rating if exists
+    if (order.driver) {
+      const driver = await Driver.findById(order.driver);
+      if (driver) {
+        const driverAvg = (driver.rating * driver.totalRatings + delivery) / (driver.totalRatings + 1);
+        driver.rating = driverAvg;
+        driver.totalRatings += 1;
+        await driver.save();
       }
     }
-    
-    if (!restaurant && req.user.userType !== 'vendor') {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'You can only request drivers for your restaurant orders' 
-      });
-    }
-    
-    if (!['pending', 'confirmed', 'preparing', 'ready'].includes(order.status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Order must be confirmed or preparing to request a driver'
-      });
-    }
-    
-    order.status = 'ready';
-    order.driverRequested = true;
-    order.driverRequestedAt = new Date();
-    await order.save();
-    
-    console.log('Driver requested for order from customer:', order.customer.name);
-    
+
+    console.log(`✅ Order ${order.orderNumber} rated: Food ${food}/5, Delivery ${delivery}/5`);
+
     res.json({
       success: true,
-      message: 'Driver requested successfully',
-      order: order
+      message: 'Rating submitted successfully',
+      order
     });
-    
+
   } catch (error) {
-    console.error('Request driver error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to request driver', 
-      error: error.message 
-    });
+    console.error('❌ Error rating order:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Debug route to check all orders
-router.get('/debug/all', authMiddleware, async (req, res) => {
+// ==========================================
+// RESTAURANT: GET ORDERS
+// ==========================================
+router.get('/restaurant/orders', auth, isVendor, async (req, res) => {
   try {
-    const allOrders = await Order.find({})
-      .populate('customer', 'name email phone')
-      .populate('items.menuItem', 'name price')
-      .select('_id customer orderNumber status total items createdAt');
+    const { status, date, limit = 50 } = req.query;
     
-    const ordersWithDetails = allOrders.map(order => ({
-      id: order._id,
-      orderNumber: order.orderNumber,
-      status: order.status,
-      total: order.total,
-      customer: {
-        id: order.customer._id,
-        name: order.customer.name,
-        email: order.customer.email,
-        phone: order.customer.phone
-      },
-      items: order.items.map(item => ({
-        name: item.name,
-        quantity: item.quantity,
-        price: item.price
-      })),
-      itemCount: order.items.length,
-      createdAt: order.createdAt
-    }));
-    
+    // Find restaurant owned by this user
+    const restaurant = await Restaurant.findOne({ owner: req.user.id });
+    if (!restaurant) {
+      return res.status(404).json({ error: 'Restaurant not found' });
+    }
+
+    const orders = await Order.findForRestaurant(restaurant._id, status)
+      .limit(parseInt(limit));
+
     res.json({
       success: true,
-      totalOrders: allOrders.length,
-      orders: ordersWithDetails,
-      currentUserId: req.user._id || req.user.id
+      count: orders.length,
+      orders
     });
+
   } catch (error) {
-    console.error('Debug route error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    console.error('❌ Error fetching restaurant orders:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// DRIVER: GET ASSIGNED ORDERS
+// ==========================================
+router.get('/driver/orders', auth, isDriver, async (req, res) => {
+  try {
+    const { status } = req.query;
+    
+    const orders = await Order.findForDriver(req.user.driverId, status);
+
+    res.json({
+      success: true,
+      count: orders.length,
+      orders
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching driver orders:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// ADMIN: GET PLATFORM STATISTICS
+// ==========================================
+router.get('/admin/stats', auth, isAdmin, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+
+    const stats = await Order.getPlatformStats(start, end);
+
+    res.json({
+      success: true,
+      period: { startDate: start, endDate: end },
+      stats
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching platform stats:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// FIND AVAILABLE DRIVERS NEAR RESTAURANT
+// ==========================================
+router.get('/:orderId/find-drivers', auth, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.orderId).populate('restaurant');
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // Find available drivers near restaurant
+    const drivers = await Driver.find({
+      isActive: true,
+      status: 'available',
+      // Add location-based query here if you have driver locations
+    }).select('name phone rating vehicle location');
+
+    res.json({
+      success: true,
+      count: drivers.length,
+      drivers
+    });
+
+  } catch (error) {
+    console.error('❌ Error finding drivers:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 

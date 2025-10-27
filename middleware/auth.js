@@ -1,4 +1,4 @@
-// middleware/auth.js - COMPLETE FIXED VERSION
+// middleware/auth.js - UPDATED FOR ORDER ROUTES COMPATIBILITY
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
@@ -80,6 +80,86 @@ async function authMiddleware(req, res, next) {
     });
   }
 }
+
+// ============================
+// SIMPLE AUTH FOR ORDER ROUTES (NEW - COMPATIBLE WITH orders.js)
+// ============================
+const auth = async (req, res, next) => {
+  try {
+    const token = req.header('Authorization')?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({ error: 'No authentication token provided' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const user = await User.findById(decoded.id).select('-password');
+    
+    if (!user) {
+      return res.status(401).json({ error: 'User not found' });
+    }
+
+    // Attach user with simple structure for order routes
+    req.user = {
+      id: user._id.toString(),
+      _id: user._id,
+      email: user.email,
+      role: user.userType, // Map userType to role
+      userType: user.userType,
+      name: user.name,
+      phone: user.phone,
+      driverProfile: user.driverProfile
+    };
+    
+    next();
+  } catch (error) {
+    console.error('Auth error:', error);
+    res.status(401).json({ error: 'Please authenticate' });
+  }
+};
+
+// ============================
+// ROLE MIDDLEWARE FOR ORDER ROUTES (NEW)
+// ============================
+const isDriver = async (req, res, next) => {
+  try {
+    if (req.user.userType !== 'driver' && req.user.role !== 'driver') {
+      return res.status(403).json({ error: 'Access denied. Driver only.' });
+    }
+    
+    // Attach driver profile if not already attached
+    if (!req.driver && req.user.driverProfile) {
+      req.driver = await Driver.findById(req.user.driverProfile);
+    }
+    
+    next();
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+const isVendor = async (req, res, next) => {
+  try {
+    if (req.user.userType !== 'vendor' && req.user.role !== 'vendor' && 
+        req.user.userType !== 'restaurant' && req.user.role !== 'restaurant') {
+      return res.status(403).json({ error: 'Access denied. Vendor only.' });
+    }
+    next();
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+const isAdmin = async (req, res, next) => {
+  try {
+    if (req.user.userType !== 'admin' && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied. Admin only.' });
+    }
+    next();
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
 
 // ============================
 // LOGIN ROUTE HELPER - FIXED
@@ -242,10 +322,10 @@ async function registerUser(req, res) {
 }
 
 // ============================
-// ROLE MIDDLEWARE
+// ROLE MIDDLEWARE (ORIGINAL - KEEP FOR COMPATIBILITY)
 // ============================
 const vendorMiddleware = (req, res, next) => {
-  if (!req.user || req.user.userType !== 'vendor') {
+  if (!req.user || (req.user.userType !== 'vendor' && req.user.role !== 'vendor')) {
     return res.status(403).json({ 
       success: false,
       message: 'Vendor access required' 
@@ -255,7 +335,7 @@ const vendorMiddleware = (req, res, next) => {
 };
 
 const customerMiddleware = (req, res, next) => {
-  if (!req.user || req.user.userType !== 'customer') {
+  if (!req.user || (req.user.userType !== 'customer' && req.user.role !== 'customer')) {
     return res.status(403).json({ 
       success: false,
       message: 'Customer access required' 
@@ -265,7 +345,7 @@ const customerMiddleware = (req, res, next) => {
 };
 
 const driverMiddleware = (req, res, next) => {
-  if (!req.user || req.user.userType !== 'driver') {
+  if (!req.user || (req.user.userType !== 'driver' && req.user.role !== 'driver')) {
     return res.status(403).json({ 
       success: false,
       message: 'Driver access required' 
@@ -458,8 +538,19 @@ const handleDriverRegistration = async (userData, driverData) => {
   }
 };
 
-// Export the main auth middleware as default, and others as named exports
+// ============================
+// EXPORTS - UPDATED FOR ORDER ROUTES COMPATIBILITY
+// ============================
+
+// Export the main auth middleware as default
 module.exports = authMiddleware;
+
+// Export all methods for different use cases
+module.exports.auth = auth;                                    // NEW - For order routes
+module.exports.isDriver = isDriver;                            // NEW - For order routes
+module.exports.isVendor = isVendor;                           // NEW - For order routes
+module.exports.isAdmin = isAdmin;                             // NEW - For order routes
+
 module.exports.loginUser = loginUser;
 module.exports.registerUser = registerUser;
 module.exports.authMiddleware = authMiddleware;

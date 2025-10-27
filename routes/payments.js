@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const Payment = require('../models/Payment');
 const Order = require('../models/Order');
+const User = require('../models/User');
 const { authMiddleware } = require('../middleware/auth');
 
 // Middleware to log all payment requests
@@ -30,8 +31,8 @@ router.post('/process', authMiddleware, async (req, res) => {
     const validPaymentMethods = {
       'card': 'card',
       'cash': 'cash',
-      'wallet': 'digital_wallet',
-      'digital_wallet': 'digital_wallet'
+      'wallet': 'wallet',
+      'yoco': 'yoco'
     };
     const mappedPaymentMethod = validPaymentMethods[paymentMethod] || 'cash';
     console.log('💳 Payment method mapping:', paymentMethod, '→', mappedPaymentMethod);
@@ -43,33 +44,116 @@ router.post('/process', authMiddleware, async (req, res) => {
     if (!finalOrderId && orderData) {
       console.log('📝 Creating new order...');
       
-      // Generate orderNumber explicitly (since model has required: true)
+      // Generate orderNumber explicitly
       const date = new Date();
       const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
       const randomNum = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
       const orderNumber = `ORD-${dateStr}-${randomNum}`;
       console.log('📋 Generated order number:', orderNumber);
       
-      // Prepare order data
+      // Get user data for phone number
+      const userData = await User.findById(req.user.id);
+      const contactPhone = userData?.phone || orderData.deliveryAddress?.contactPhone || '0000000000';
+      console.log('📞 Contact phone:', contactPhone);
+      
+      // Prepare order data - MATCHES Order.js SCHEMA EXACTLY
       const orderCreateData = {
-        customer: req.user.id,
+        // References (REQUIRED)
+        user: req.user.id,
         restaurant: orderData.restaurant || orderData.restaurantId,
+        
+        // Order Number
         orderNumber: orderNumber,
+        
+        // Items Array (REQUIRED)
         items: orderData.items.map(item => ({
           menuItem: item.menuItem,
-          quantity: item.quantity,
-          price: item.price,
           name: item.name,
-          itemTotal: item.price * item.quantity
+          price: item.price,
+          quantity: item.quantity,
+          specialInstructions: '',
+          subtotal: item.price * item.quantity  // ✅ REQUIRED field
         })),
-        deliveryAddress: orderData.deliveryAddress,
-        subtotal: orderData.subtotal || amount,
-        deliveryFee: orderData.deliveryFee || 0,
-        tax: orderData.tax || 0,
-        total: orderData.total || amount,
-        paymentMethod: mappedPaymentMethod,
+        
+        // Delivery Address (REQUIRED)
+        deliveryAddress: {
+          street: orderData.deliveryAddress.street,
+          city: orderData.deliveryAddress.city,
+          state: orderData.deliveryAddress.state,
+          zipCode: orderData.deliveryAddress.zipCode,
+          country: orderData.deliveryAddress.country || 'South Africa',
+          location: {
+            type: 'Point',
+            coordinates: [0, 0]  // Default coordinates
+          },
+          instructions: '',
+          contactPhone: contactPhone  // ✅ REQUIRED field
+        },
+        
+        // Pricing Object (matches schema structure)
+        pricing: {
+          subtotal: orderData.subtotal || 0,
+          deliveryFee: orderData.deliveryFee || 25,
+          serviceFee: orderData.serviceFee || 5,
+          discount: 0,
+          total: orderData.total || amount,
+          platformCommissionRate: 20,
+          platformCommission: 0,  // Will be calculated by pre-save
+          restaurantPayout: 0,     // Will be calculated by pre-save
+          driverPayout: 20,
+          platformProfit: 0,       // Will be calculated by pre-save
+          tax: orderData.tax || 0,
+          taxRate: 0
+        },
+        
+        // Driver Earnings (REQUIRED at root level)
+        driverEarnings: 20,  // ✅ This field is read by frontend
+        
+        // Payment Object (REQUIRED)
+        payment: {
+          method: mappedPaymentMethod,  // ✅ REQUIRED: 'cash', 'card', 'wallet', or 'yoco'
+          status: 'pending',
+          transactionId: null,
+          paidAt: null
+        },
+        
+        // Status
         status: 'pending',
-        paymentStatus: 'pending'
+        driverStatus: 'accepted',
+        
+        // Timestamps
+        timestamps: {
+          placedAt: new Date(),
+          confirmedAt: null,
+          preparingAt: null,
+          readyAt: null,
+          pickedUpAt: null,
+          deliveredAt: null,
+          completedAt: null,
+          cancelledAt: null
+        },
+        
+        // Estimated times
+        estimatedPreparationTime: 30,
+        estimatedDeliveryTime: 45,
+        
+        // Special instructions
+        specialInstructions: '',
+        
+        // Rating (empty initially)
+        rating: {
+          food: null,
+          delivery: null,
+          overall: null,
+          review: '',
+          reviewedAt: null
+        },
+        
+        // Cancellation (empty initially)
+        cancellation: {
+          reason: null,
+          refundAmount: 0
+        }
       };
 
       console.log('📦 Creating order with data:', JSON.stringify(orderCreateData, null, 2));
@@ -82,7 +166,8 @@ router.post('/process', authMiddleware, async (req, res) => {
       console.log('✅ Order created:', finalOrderId);
       console.log('   Order Number:', order.orderNumber);
       console.log('   Restaurant:', order.restaurant);
-      console.log('   Total:', order.total);
+      console.log('   Total:', order.pricing.total);
+      console.log('   Driver Earnings:', order.driverEarnings);
     } else if (finalOrderId) {
       console.log('📖 Loading existing order:', finalOrderId);
       
@@ -105,7 +190,7 @@ router.post('/process', authMiddleware, async (req, res) => {
       });
     }
 
-    // Step 2: Create the payment with BOTH order and restaurant
+    // Step 2: Create the payment record
     console.log('💰 Creating payment record...');
     console.log('   Order ID:', finalOrderId);
     console.log('   Restaurant ID:', order.restaurant);
@@ -116,12 +201,12 @@ router.post('/process', authMiddleware, async (req, res) => {
       order: finalOrderId,
       restaurant: order.restaurant,
       amount: {
-        subtotal: order.subtotal,
-        deliveryFee: order.deliveryFee || 0,
-        tax: order.tax || 0,
-        total: amount || order.total,
+        subtotal: order.pricing.subtotal,
+        deliveryFee: order.pricing.deliveryFee || 0,
+        tax: order.pricing.tax || 0,
+        total: amount || order.pricing.total,
         platformFee: 0,
-        vendorAmount: amount || order.total
+        vendorAmount: amount || order.pricing.total
       },
       currency: 'ZAR',
       paymentMethod: {
@@ -151,9 +236,11 @@ router.post('/process', authMiddleware, async (req, res) => {
     console.log('   Transaction ID:', payment.stripePaymentIntentId);
 
     // Step 3: Update order with payment info
-    order.payment = payment._id;
-    order.paymentStatus = 'paid';
+    order.payment.transactionId = payment.stripePaymentIntentId;
+    order.payment.status = 'paid';
+    order.payment.paidAt = new Date();
     order.status = 'confirmed';
+    order.timestamps.confirmedAt = new Date();
     await order.save();
 
     console.log('✅ Order updated with payment info');
@@ -176,7 +263,8 @@ router.post('/process', authMiddleware, async (req, res) => {
         id: order._id,
         orderNumber: order.orderNumber,
         status: order.status,
-        total: order.total
+        total: order.pricing.total,
+        driverEarnings: order.driverEarnings
       }
     });
 
