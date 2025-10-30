@@ -1,4 +1,4 @@
-﻿// routes/vendors.js - FULL UPDATED VERSION WITH VENDOR ORDER VIEW
+﻿// routes/vendors.js - COMPLETE FIXED VERSION
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -114,50 +114,162 @@ router.put('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => 
   }
 });
 
-// ===== VENDOR ORDERS =====
+// ===== VENDOR ORDERS - FIXED =====
 router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const vendorId = req.user._id;
+    console.log('\n========== VENDOR ORDERS REQUEST ==========');
+    console.log('Vendor ID:', vendorId);
+    
     const restaurant = await Restaurant.findOne({ owner: vendorId });
-    if (!restaurant) return res.json({ success: true, orders: [], message: 'Create your restaurant first' });
+    if (!restaurant) {
+      console.log('❌ No restaurant found');
+      return res.json({ success: true, orders: [], message: 'Create your restaurant first' });
+    }
+
+    console.log('✅ Restaurant found:', restaurant.name);
 
     const activeStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery'];
 
-    const orders = await Order.find({ restaurant: restaurant._id, status: { $in: activeStatuses } })
+    const orders = await Order.find({ 
+      restaurant: restaurant._id, 
+      status: { $in: activeStatuses } 
+    })
       .populate('user', 'name email phone')
       .populate('driver', 'name phone')
       .populate('restaurant', 'name')
+      .lean()
       .sort({ createdAt: -1 })
       .limit(50);
 
-    res.json({ success: true, orders, restaurant: { _id: restaurant._id, name: restaurant.name } });
+    console.log('📦 Orders found:', orders.length);
+    
+    // ✅ CRITICAL FIX: Transform orders to flatten pricing object
+    const transformedOrders = orders.map(order => {
+      const transformed = {
+        ...order,
+        // Add flat price fields for frontend compatibility
+        total: order.pricing?.total || order.total || 0,
+        subtotal: order.pricing?.subtotal || order.subtotal || 0,
+        deliveryFee: order.pricing?.deliveryFee || order.deliveryFee || 0,
+        serviceFee: order.pricing?.serviceFee || order.serviceFee || 0,
+        // Also map customer info
+        customerName: order.user?.name || 'Unknown',
+        customerPhone: order.user?.phone || 'N/A',
+        // Keep original pricing object too
+        pricing: order.pricing
+      };
+      
+      return transformed;
+    });
+
+    if (transformedOrders.length > 0) {
+      console.log('✅ First order transformed:');
+      console.log('   ID:', transformedOrders[0]._id);
+      console.log('   Total:', transformedOrders[0].total);
+      console.log('   Subtotal:', transformedOrders[0].subtotal);
+      console.log('   DeliveryFee:', transformedOrders[0].deliveryFee);
+      console.log('   ServiceFee:', transformedOrders[0].serviceFee);
+    }
+    console.log('==========================================\n');
+
+    res.json({ 
+      success: true, 
+      orders: transformedOrders, 
+      restaurant: { _id: restaurant._id, name: restaurant.name } 
+    });
   } catch (error) {
+    console.error('❌ Error fetching vendor orders:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch orders', error: error.message });
   }
 });
 
-// ===== UPDATE ORDER STATUS =====
+// ===== UPDATE ORDER STATUS - FIXED FOR OLD ORDERS =====
 router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const { orderId } = req.params;
     const { status } = req.body;
     const vendorId = req.user._id;
 
+    console.log(`\n📝 Updating order ${orderId} to status: ${status}`);
+
     const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'cancelled'];
-    if (!validStatuses.includes(status)) return res.status(400).json({ success: false, message: 'Invalid status' });
+    if (!validStatuses.includes(status)) {
+      console.log('❌ Invalid status:', status);
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
 
     const restaurant = await Restaurant.findOne({ owner: vendorId });
-    if (!restaurant) return res.status(404).json({ success: false, message: 'Restaurant not found' });
+    if (!restaurant) {
+      console.log('❌ Restaurant not found for vendor');
+      return res.status(404).json({ success: false, message: 'Restaurant not found' });
+    }
 
-    const order = await Order.findOne({ _id: orderId, restaurant: restaurant._id });
-    if (!order) return res.status(404).json({ success: false, message: 'Order not found or not yours' });
+    const order = await Order.findOne({ _id: orderId, restaurant: restaurant._id }).lean();
+    if (!order) {
+      console.log('❌ Order not found');
+      return res.status(404).json({ success: false, message: 'Order not found or not yours' });
+    }
 
     const oldStatus = order.status;
-    order.status = status;
-    await order.save();
+    console.log(`   Old status: ${oldStatus}`);
 
-    res.json({ success: true, message: `Order status updated to ${status}`, order: { _id: order._id, orderNumber: order.orderNumber, previousStatus: oldStatus, status: order.status } });
+    // ✅ FIX: Use updateOne to bypass validation for old orders
+    const timestampField = 
+      status === 'confirmed' ? 'confirmedAt' :
+      status === 'preparing' ? 'preparingAt' :
+      status === 'ready' ? 'readyAt' :
+      status === 'picked_up' ? 'pickedUpAt' :
+      status === 'delivered' ? 'deliveredAt' :
+      status === 'cancelled' ? 'cancelledAt' : null;
+
+    const updateData = {
+      status: status
+    };
+
+    if (timestampField) {
+      updateData[`timestamps.${timestampField}`] = new Date();
+      console.log(`   Setting timestamp: timestamps.${timestampField}`);
+    }
+
+    // Update driver status if applicable
+    if (status === 'driver_assigned') updateData.driverStatus = 'accepted';
+    if (status === 'picked_up') updateData.driverStatus = 'picked_up';
+    if (status === 'on_the_way') updateData.driverStatus = 'on_the_way';
+    if (status === 'delivered') updateData.driverStatus = 'delivered';
+
+    console.log('   Update data:', updateData);
+
+    // ✅ CRITICAL: Use updateOne with runValidators: false
+    await Order.updateOne(
+      { _id: orderId },
+      { $set: updateData },
+      { runValidators: false }
+    );
+
+    console.log(`✅ Order ${orderId} status updated from ${oldStatus} to ${status}`);
+
+    // Fetch updated order
+    const updatedOrder = await Order.findById(orderId).lean();
+
+    // Transform response
+    const orderResponse = {
+      _id: updatedOrder._id,
+      orderNumber: updatedOrder.orderNumber,
+      previousStatus: oldStatus,
+      status: updatedOrder.status,
+      total: updatedOrder.pricing?.total || updatedOrder.total || 0,
+      subtotal: updatedOrder.pricing?.subtotal || updatedOrder.subtotal || 0,
+      deliveryFee: updatedOrder.pricing?.deliveryFee || updatedOrder.deliveryFee || 0
+    };
+
+    res.json({ 
+      success: true, 
+      message: `Order status updated to ${status}`, 
+      order: orderResponse
+    });
   } catch (error) {
+    console.error('❌ Error updating order status:', error);
     res.status(500).json({ success: false, message: 'Failed to update status', error: error.message });
   }
 });
@@ -166,10 +278,27 @@ router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (r
 router.get('/menu', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const restaurant = await Restaurant.findOne({ owner: req.user._id });
-    if (!restaurant) return res.json({ success: true, menuItems: [], restaurant: null, message: 'Create your restaurant first' });
+    if (!restaurant) {
+      return res.json({ 
+        success: true, 
+        menuItems: [], 
+        restaurant: null, 
+        message: 'Create your restaurant first' 
+      });
+    }
 
-    const menuItems = await MenuItem.find({ restaurant: restaurant._id }).sort({ category: 1, name: 1 });
-    res.json({ success: true, menuItems, restaurant: { _id: restaurant._id, name: restaurant.name, description: restaurant.description } });
+    const menuItems = await MenuItem.find({ restaurant: restaurant._id })
+      .sort({ category: 1, name: 1 });
+      
+    res.json({ 
+      success: true, 
+      menuItems, 
+      restaurant: { 
+        _id: restaurant._id, 
+        name: restaurant.name, 
+        description: restaurant.description 
+      } 
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Error fetching menu', error: error.message });
   }
@@ -177,18 +306,30 @@ router.get('/menu', authMiddleware, vendorMiddleware, async (req, res) => {
 
 router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
   const contentType = req.get('Content-Type') || '';
-  if (contentType.includes('multipart/form-data')) upload.single('image')(req, res, next);
-  else next();
+  if (contentType.includes('multipart/form-data')) {
+    upload.single('image')(req, res, next);
+  } else {
+    next();
+  }
 }, async (req, res) => {
   try {
     const restaurant = await Restaurant.findOne({ owner: req.user._id });
-    if (!restaurant) { if (req.file?.filename) await deleteFile(req.file.filename); return res.status(400).json({ success: false, message: 'Create restaurant first' }); }
+    if (!restaurant) {
+      if (req.file?.filename) await deleteFile(req.file.filename);
+      return res.status(400).json({ success: false, message: 'Create restaurant first' });
+    }
 
     const { name, description, price, category } = req.body;
-    if (!name || !price) { if (req.file?.filename) await deleteFile(req.file.filename); return res.status(400).json({ success: false, message: 'Name & price required' }); }
+    if (!name || !price) {
+      if (req.file?.filename) await deleteFile(req.file.filename);
+      return res.status(400).json({ success: false, message: 'Name & price required' });
+    }
 
     const parsedPrice = parseFloat(price);
-    if (isNaN(parsedPrice) || parsedPrice <= 0) { if (req.file?.filename) await deleteFile(req.file.filename); return res.status(400).json({ success: false, message: 'Price must be positive number' }); }
+    if (isNaN(parsedPrice) || parsedPrice <= 0) {
+      if (req.file?.filename) await deleteFile(req.file.filename);
+      return res.status(400).json({ success: false, message: 'Price must be positive number' });
+    }
 
     const menuItem = new MenuItem({
       name: name.trim(),
