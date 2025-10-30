@@ -94,7 +94,33 @@ app.use((req, res, next) => {
 });
 
 // ========== DATABASE CONNECTION ==========
-mongoose.connect(process.env.MONGO_URI)
+const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
+
+// Debug logging
+console.log('\n🔍 Environment Check:');
+console.log('NODE_ENV:', process.env.NODE_ENV);
+console.log('PORT:', process.env.PORT);
+console.log('MONGODB_URI exists:', !!process.env.MONGODB_URI);
+console.log('MONGO_URI exists:', !!process.env.MONGO_URI);
+
+if (!MONGODB_URI) {
+  console.error('\n❌ CRITICAL ERROR: No MongoDB URI found!');
+  console.error('Available MONGO env vars:', 
+    Object.keys(process.env).filter(key => key.toUpperCase().includes('MONGO'))
+  );
+  console.error('\n💡 Solution: Add MONGO_URI to environment variables');
+  console.error('Variable name: MONGO_URI');
+  console.error('Value format: mongodb+srv://username:password@cluster...');
+  process.exit(1);
+}
+
+console.log('🔗 Connecting to MongoDB...');
+console.log('URI format looks valid:', MONGODB_URI.startsWith('mongodb'));
+
+mongoose.connect(MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
   .then(async () => {
     console.log('✅ MongoDB Connected Successfully');
     console.log('📊 Database:', mongoose.connection.db.databaseName);
@@ -104,7 +130,8 @@ mongoose.connect(process.env.MONGO_URI)
     }
   })
   .catch(err => {
-    console.error('❌ MongoDB connection error:', err);
+    console.error('❌ MongoDB connection error:', err.message);
+    console.error('Full error:', err);
     process.exit(1);
   });
 
