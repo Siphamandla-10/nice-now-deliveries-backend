@@ -68,7 +68,6 @@ router.post('/create', auth, async (req, res) => {
       restaurant: restaurant._id,
       items: detailedItems,
       deliveryAddress: formattedAddress,
-      // ✅ FIXED: Use pricing object structure
       pricing: {
         subtotal: subtotal,
         deliveryFee: deliveryFee,
@@ -88,10 +87,7 @@ router.post('/create', auth, async (req, res) => {
     await newOrder.save();
     
     console.log('✅ Order saved successfully');
-    console.log('💰 Order pricing:', newOrder.pricing);
-    console.log('💰 Order total:', newOrder.pricing.total);
     
-    // Transform for response
     const orderResponse = newOrder.toObject();
     orderResponse.total = newOrder.pricing.total;
     orderResponse.subtotal = newOrder.pricing.subtotal;
@@ -133,20 +129,15 @@ router.post('/migrate-old-orders', auth, async (req, res) => {
         if (needsUpdate) {
           const updateData = {};
 
-          // Fix payment if missing
           if (!order.payment?.method) {
             updateData['payment.method'] = 'cash';
             updateData['payment.status'] = order.payment?.status || 'pending';
-            console.log(`  ✅ Fixing payment for order ${order._id}`);
           }
 
-          // Fix deliveryAddress if missing contactPhone
           if (!order.deliveryAddress?.contactPhone) {
             updateData['deliveryAddress.contactPhone'] = '0000000000';
-            console.log(`  ✅ Fixing contactPhone for order ${order._id}`);
           }
 
-          // Fix pricing if missing
           if (!order.pricing) {
             updateData['pricing'] = {
               subtotal: order.subtotal || 0,
@@ -162,20 +153,16 @@ router.post('/migrate-old-orders', auth, async (req, res) => {
               tax: 0,
               taxRate: 0
             };
-            console.log(`  ✅ Fixing pricing for order ${order._id}`);
           }
 
-          // Fix items subtotal if missing
           if (order.items && order.items.some(item => item.subtotal === undefined)) {
             const fixedItems = order.items.map(item => ({
               ...item,
               subtotal: item.subtotal || (item.price * item.quantity)
             }));
             updateData['items'] = fixedItems;
-            console.log(`  ✅ Fixing item subtotals for order ${order._id}`);
           }
 
-          // Fix driverEarnings if missing
           if (order.driverEarnings === undefined) {
             updateData['driverEarnings'] = order.pricing?.driverPayout || 20;
           }
@@ -187,33 +174,23 @@ router.post('/migrate-old-orders', auth, async (req, res) => {
           );
 
           updated++;
-          if (updated % 10 === 0) {
-            console.log(`   Progress: ${updated} orders updated...`);
-          }
         } else {
           skipped++;
         }
       } catch (err) {
-        console.error(`❌ Error updating order ${order._id}:`, err.message);
         errors.push({ orderId: order._id, error: err.message });
       }
     }
 
     console.log('\n========== ✅ MIGRATION COMPLETE ==========');
     console.log(`   ✅ Updated: ${updated} orders`);
-    console.log(`   ⏭️  Skipped: ${skipped} orders (already valid)`);
+    console.log(`   ⏭️  Skipped: ${skipped} orders`);
     console.log(`   ❌ Errors: ${errors.length}`);
-    console.log('==========================================\n');
 
     res.json({
       success: true,
       message: 'Migration completed successfully',
-      stats: {
-        total: orders.length,
-        updated,
-        skipped,
-        errors: errors.length
-      },
+      stats: { total: orders.length, updated, skipped, errors: errors.length },
       errors: errors.length > 0 ? errors : undefined
     });
 
@@ -236,32 +213,81 @@ router.get('/debug-test', auth, async (req, res) => {
     
     const allOrders = await Order.find().limit(3).lean();
     console.log('📊 Total orders in DB:', await Order.countDocuments());
-    console.log('📋 Sample orders found:', allOrders.length);
     
     if (allOrders.length > 0) {
       const firstOrder = allOrders[0];
       console.log('\n========== FIRST ORDER ==========');
       console.log('Order ID:', firstOrder._id);
-      console.log('Has pricing object:', !!firstOrder.pricing);
       console.log('Pricing.total:', firstOrder.pricing?.total);
-      console.log('Pricing.subtotal:', firstOrder.pricing?.subtotal);
-      console.log('Pricing.deliveryFee:', firstOrder.pricing?.deliveryFee);
       console.log('Status:', firstOrder.status);
-      console.log('\nFull pricing object:', JSON.stringify(firstOrder.pricing, null, 2));
     }
     
     res.json({
       success: true,
       debug: {
         totalOrders: await Order.countDocuments(),
-        firstOrderPricing: allOrders[0]?.pricing || null,
-        sampleOrder: allOrders[0] || null
+        firstOrderPricing: allOrders[0]?.pricing || null
       }
     });
     
   } catch (error) {
     console.error('❌ Debug test error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// GET AVAILABLE ORDERS FOR DRIVERS - CRITICAL
+// ==========================================
+router.get('/available', auth, isDriver, async (req, res) => {
+  try {
+    console.log('\n========== 🚗 DRIVER AVAILABLE ORDERS REQUEST ==========');
+    console.log('Driver ID:', req.user.id);
+
+    // Find orders that are ready for pickup and don't have a driver assigned
+    const availableOrders = await Order.find({
+      status: 'ready',
+      driver: null
+    })
+      .populate('restaurant', 'name address contact')
+      .populate('user', 'name phone')
+      .lean()
+      .sort({ createdAt: -1 })
+      .limit(20);
+
+    console.log('📦 Available orders found:', availableOrders.length);
+
+    // Transform orders
+    const transformedOrders = availableOrders.map(order => ({
+      ...order,
+      total: order.pricing?.total || order.total || 0,
+      subtotal: order.pricing?.subtotal || order.subtotal || 0,
+      deliveryFee: order.pricing?.deliveryFee || order.deliveryFee || 0,
+      serviceFee: order.pricing?.serviceFee || order.serviceFee || 0,
+      driverEarnings: order.driverEarnings || order.pricing?.driverPayout || 20
+    }));
+
+    if (transformedOrders.length > 0) {
+      console.log('✅ First available order:');
+      console.log('   ID:', transformedOrders[0]._id);
+      console.log('   Restaurant:', transformedOrders[0].restaurant?.name);
+      console.log('   Total:', transformedOrders[0].total);
+      console.log('   Driver Earnings:', transformedOrders[0].driverEarnings);
+    }
+    console.log('=========================================\n');
+
+    res.json({ 
+      success: true, 
+      count: transformedOrders.length, 
+      orders: transformedOrders 
+    });
+  } catch (error) {
+    console.error('❌ Error fetching available orders:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch available orders', 
+      details: error.message 
+    });
   }
 });
 
@@ -277,7 +303,6 @@ router.get('/', auth, isAdmin, async (req, res) => {
       .lean()
       .sort({ createdAt: -1 });
 
-    // Transform orders to include flat price fields
     const transformedOrders = orders.map(order => ({
       ...order,
       total: order.pricing?.total || order.total || 0,
@@ -349,11 +374,6 @@ router.get('/vendor-orders', auth, isVendor, async (req, res) => {
       serviceFee: order.pricing?.serviceFee || order.serviceFee || 0
     }));
 
-    console.log('Vendor orders fetched:', transformedOrders.length);
-    if (transformedOrders.length > 0) {
-      console.log('First order total:', transformedOrders[0].total);
-    }
-
     res.json({ success: true, count: transformedOrders.length, orders: transformedOrders });
   } catch (error) {
     console.error('❌ Error fetching vendor orders:', error);
@@ -370,9 +390,8 @@ router.post('/:id/request-driver', auth, isVendor, async (req, res) => {
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
     const restaurant = await Restaurant.findOne({ _id: order.restaurant, owner: req.user.id });
-    if (!restaurant) return res.status(403).json({ error: 'Unauthorized to request driver for this order' });
+    if (!restaurant) return res.status(403).json({ error: 'Unauthorized' });
 
-    // ✅ Use updateOne to bypass validation
     await Order.updateOne(
       { _id: req.params.id },
       { 
@@ -391,9 +410,7 @@ router.post('/:id/request-driver', auth, isVendor, async (req, res) => {
       message: 'Driver requested successfully', 
       order: {
         ...updatedOrder,
-        total: updatedOrder.pricing?.total || updatedOrder.total || 0,
-        subtotal: updatedOrder.pricing?.subtotal || updatedOrder.subtotal || 0,
-        deliveryFee: updatedOrder.pricing?.deliveryFee || updatedOrder.deliveryFee || 0
+        total: updatedOrder.pricing?.total || updatedOrder.total || 0
       }
     });
   } catch (error) {
@@ -452,7 +469,6 @@ router.get('/:id', auth, async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized to view this order' });
     }
 
-    // Transform order
     const transformedOrder = {
       ...order,
       total: order.pricing?.total || order.total || 0,
@@ -460,8 +476,6 @@ router.get('/:id', auth, async (req, res) => {
       deliveryFee: order.pricing?.deliveryFee || order.deliveryFee || 0,
       serviceFee: order.pricing?.serviceFee || order.serviceFee || 0
     };
-
-    console.log('Order details - total:', transformedOrder.total);
 
     res.json({ success: true, order: transformedOrder });
   } catch (error) {
@@ -471,7 +485,7 @@ router.get('/:id', auth, async (req, res) => {
 });
 
 // ==========================================
-// UPDATE ORDER STATUS (Vendor or Admin) - FIXED
+// UPDATE ORDER STATUS - FIXED
 // ==========================================
 router.put('/:id/status', auth, async (req, res) => {
   try {
@@ -481,10 +495,9 @@ router.put('/:id/status', auth, async (req, res) => {
 
     if (req.user.userType === 'vendor') {
       const restaurant = await Restaurant.findOne({ _id: order.restaurant, owner: req.user.id });
-      if (!restaurant) return res.status(403).json({ error: 'Unauthorized to update this order' });
+      if (!restaurant) return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    // ✅ Use updateOne to bypass validation
     const timestampField = 
       status === 'confirmed' ? 'confirmedAt' :
       status === 'preparing' ? 'preparingAt' :
@@ -504,10 +517,8 @@ router.put('/:id/status', auth, async (req, res) => {
       { runValidators: false }
     );
     
-    // Fetch updated order
     const updatedOrder = await Order.findById(req.params.id).lean();
     
-    // Transform response
     const orderResponse = {
       ...updatedOrder,
       total: updatedOrder.pricing?.total || updatedOrder.total || 0,
@@ -531,7 +542,6 @@ router.put('/:id/assign', auth, isDriver, async (req, res) => {
     if (!order) return res.status(404).json({ error: 'Order not found' });
     if (order.driver) return res.status(400).json({ error: 'Order already assigned' });
 
-    // ✅ Use updateOne to bypass validation
     await Order.updateOne(
       { _id: req.params.id },
       { 
@@ -546,7 +556,6 @@ router.put('/:id/assign', auth, isDriver, async (req, res) => {
 
     const updatedOrder = await Order.findById(req.params.id).lean();
 
-    // Transform response
     const orderResponse = {
       ...updatedOrder,
       total: updatedOrder.pricing?.total || updatedOrder.total || 0,
@@ -572,10 +581,9 @@ router.put('/:id/driver-status', auth, isDriver, async (req, res) => {
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
     if (!order.driver || order.driver.toString() !== req.user.id) {
-      return res.status(403).json({ error: 'Unauthorized to update this order' });
+      return res.status(403).json({ error: 'Unauthorized' });
     }
 
-    // ✅ Use updateOne to bypass validation
     const timestampField = 
       status === 'picked_up' ? 'pickedUpAt' :
       status === 'on_the_way' ? 'pickedUpAt' :
@@ -594,7 +602,6 @@ router.put('/:id/driver-status', auth, isDriver, async (req, res) => {
 
     const updatedOrder = await Order.findById(req.params.id).lean();
 
-    // Transform response
     const orderResponse = {
       ...updatedOrder,
       total: updatedOrder.pricing?.total || updatedOrder.total || 0,
