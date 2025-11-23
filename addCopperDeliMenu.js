@@ -19,7 +19,7 @@ async function addCopperDeliMenu() {
   try {
     const mongoURI = process.env.MONGODB_URI || process.env.MONGO_URI;
     
-    console.log('🍽️  ADDING COPPER DELI MENU');
+    console.log('🍽️  ADDING COPPER DELI MENU ITEMS');
     console.log('='.repeat(80));
     
     console.log('🔌 Connecting to MongoDB...');
@@ -134,6 +134,7 @@ async function addCopperDeliMenu() {
         console.log(`⚠️  No image found for ${itemData.name}`);
         console.log('   Expected locations:');
         possibleImagePaths.forEach(p => console.log(`   - ${p}`));
+        console.log('   📝 Creating menu item WITHOUT image (you can add it later)');
       }
 
       // Create menu item

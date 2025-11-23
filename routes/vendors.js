@@ -1,4 +1,4 @@
-﻿// routes/vendors.js - COMPLETE FIXED VERSION
+﻿// routes/vendors.js - COMPLETE FIXED VERSION WITH DRIVER POPULATION AND CORRECT CALCULATIONS
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -44,6 +44,40 @@ const deleteFile = async (publicId) => {
   }
 };
 
+// ===== HELPER: CALCULATE ORDER TOTALS =====
+const calculateOrderTotals = (order) => {
+  // Calculate subtotal from items
+  let calculatedSubtotal = 0;
+  if (order.items && Array.isArray(order.items)) {
+    calculatedSubtotal = order.items.reduce((sum, item) => {
+      const itemPrice = item.price || 0;
+      const itemQuantity = item.quantity || 1;
+      return sum + (itemPrice * itemQuantity);
+    }, 0);
+  }
+
+  // Get fees from pricing or fallback to order level
+  const deliveryFee = order.pricing?.deliveryFee || order.deliveryFee || 0;
+  const serviceFee = order.pricing?.serviceFee || order.serviceFee || 0;
+  const tax = order.pricing?.tax || order.tax || 0;
+  const discount = order.pricing?.discount || order.discount || 0;
+
+  // Use pricing.subtotal if available, otherwise use calculated
+  const subtotal = order.pricing?.subtotal || calculatedSubtotal;
+
+  // Calculate total
+  const total = subtotal + deliveryFee + serviceFee + tax - discount;
+
+  return {
+    subtotal: parseFloat(subtotal.toFixed(2)),
+    deliveryFee: parseFloat(deliveryFee.toFixed(2)),
+    serviceFee: parseFloat(serviceFee.toFixed(2)),
+    tax: parseFloat(tax.toFixed(2)),
+    discount: parseFloat(discount.toFixed(2)),
+    total: parseFloat(total.toFixed(2))
+  };
+};
+
 // ===== TEST ROUTE =====
 router.get('/test', (req, res) => {
   res.json({ success: true, message: 'Vendors route working!' });
@@ -85,7 +119,7 @@ router.post('/restaurant', authMiddleware, vendorMiddleware, async (req, res) =>
       name: req.body.name || `${req.user.name}'s Restaurant`,
       description: req.body.description || 'Welcome to our restaurant',
       cuisine: req.body.cuisine || 'Various',
-      deliveryFee: req.body.deliveryFee || 2.99,
+      deliveryFee: req.body.deliveryFee || 20,
       minimumOrder: req.body.minimumOrder || 0,
       isActive: req.body.isActive || false,
       status: req.body.status || 'active',
@@ -114,7 +148,7 @@ router.put('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => 
   }
 });
 
-// ===== VENDOR ORDERS - FIXED =====
+// ===== VENDOR ORDERS - WITH DRIVER POPULATION AND CORRECT CALCULATIONS =====
 router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const vendorId = req.user._id;
@@ -129,35 +163,55 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
 
     console.log('✅ Restaurant found:', restaurant.name);
 
-    const activeStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery'];
+    const { status } = req.query;
+    const query = { restaurant: restaurant._id };
+    
+    // If status filter is provided, use it; otherwise show active orders
+    if (status) {
+      query.status = status;
+    } else {
+      // Default: show active orders (not delivered or cancelled)
+      query.status = { $in: ['pending', 'confirmed', 'preparing', 'ready', 'driver_assigned', 'picked_up', 'on_the_way'] };
+    }
 
-    const orders = await Order.find({ 
-      restaurant: restaurant._id, 
-      status: { $in: activeStatuses } 
-    })
+    const orders = await Order.find(query)
       .populate('user', 'name email phone')
-      .populate('driver', 'name phone')
+      .populate('driver', 'name phone vehicleType vehicleNumber') // ✅ POPULATE DRIVER
       .populate('restaurant', 'name')
+      .populate('items.menuItem', 'name price')
       .lean()
       .sort({ createdAt: -1 })
       .limit(50);
 
     console.log('📦 Orders found:', orders.length);
     
-    // ✅ CRITICAL FIX: Transform orders to flatten pricing object
+    // ✅ Transform orders with correct calculations and driver info
     const transformedOrders = orders.map(order => {
+      const calculations = calculateOrderTotals(order);
+      
       const transformed = {
         ...order,
-        // Add flat price fields for frontend compatibility
-        total: order.pricing?.total || order.total || 0,
-        subtotal: order.pricing?.subtotal || order.subtotal || 0,
-        deliveryFee: order.pricing?.deliveryFee || order.deliveryFee || 0,
-        serviceFee: order.pricing?.serviceFee || order.serviceFee || 0,
-        // Also map customer info
+        // Correct calculated totals
+        subtotal: calculations.subtotal,
+        deliveryFee: calculations.deliveryFee,
+        serviceFee: calculations.serviceFee,
+        tax: calculations.tax,
+        discount: calculations.discount,
+        total: calculations.total,
+        // Customer info
         customerName: order.user?.name || 'Unknown',
         customerPhone: order.user?.phone || 'N/A',
-        // Keep original pricing object too
-        pricing: order.pricing
+        customerEmail: order.user?.email || 'N/A',
+        // Driver info (if assigned)
+        driverName: order.driver?.name || null,
+        driverPhone: order.driver?.phone || null,
+        driverVehicle: order.driver?.vehicleType || null,
+        driverVehicleNumber: order.driver?.vehicleNumber || null,
+        hasDriver: !!order.driver,
+        // Keep original objects too
+        pricing: order.pricing,
+        driver: order.driver,
+        user: order.user
       };
       
       return transformed;
@@ -166,15 +220,18 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
     if (transformedOrders.length > 0) {
       console.log('✅ First order transformed:');
       console.log('   ID:', transformedOrders[0]._id);
-      console.log('   Total:', transformedOrders[0].total);
+      console.log('   Status:', transformedOrders[0].status);
       console.log('   Subtotal:', transformedOrders[0].subtotal);
-      console.log('   DeliveryFee:', transformedOrders[0].deliveryFee);
-      console.log('   ServiceFee:', transformedOrders[0].serviceFee);
+      console.log('   Delivery Fee:', transformedOrders[0].deliveryFee);
+      console.log('   Service Fee:', transformedOrders[0].serviceFee);
+      console.log('   Total:', transformedOrders[0].total);
+      console.log('   Driver:', transformedOrders[0].driverName || 'Not assigned');
     }
     console.log('==========================================\n');
 
     res.json({ 
       success: true, 
+      count: transformedOrders.length,
       orders: transformedOrders, 
       restaurant: { _id: restaurant._id, name: restaurant.name } 
     });
@@ -184,16 +241,74 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
   }
 });
 
-// ===== UPDATE ORDER STATUS - FIXED FOR OLD ORDERS =====
+// ===== GET SINGLE ORDER BY ID =====
+router.get('/orders/:orderId', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const vendorId = req.user._id;
+
+    console.log('\n========== GET SINGLE VENDOR ORDER ==========');
+    console.log('Order ID:', orderId);
+    console.log('Vendor ID:', vendorId);
+
+    const restaurant = await Restaurant.findOne({ owner: vendorId });
+    if (!restaurant) {
+      return res.status(404).json({ success: false, message: 'Restaurant not found' });
+    }
+
+    const order = await Order.findOne({ _id: orderId, restaurant: restaurant._id })
+      .populate('user', 'name email phone')
+      .populate('driver', 'name phone vehicleType vehicleNumber')
+      .populate('restaurant', 'name address contact')
+      .populate('items.menuItem', 'name price image')
+      .lean();
+
+    if (!order) {
+      console.log('❌ Order not found');
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    const calculations = calculateOrderTotals(order);
+
+    const transformedOrder = {
+      ...order,
+      subtotal: calculations.subtotal,
+      deliveryFee: calculations.deliveryFee,
+      serviceFee: calculations.serviceFee,
+      tax: calculations.tax,
+      discount: calculations.discount,
+      total: calculations.total,
+      customerName: order.user?.name || 'Unknown',
+      customerPhone: order.user?.phone || 'N/A',
+      customerEmail: order.user?.email || 'N/A',
+      driverName: order.driver?.name || null,
+      driverPhone: order.driver?.phone || null,
+      driverVehicle: order.driver?.vehicleType || null,
+      hasDriver: !!order.driver
+    };
+
+    console.log('✅ Order found:', order.orderNumber);
+    console.log('   Total:', transformedOrder.total);
+    console.log('   Driver:', transformedOrder.driverName || 'Not assigned');
+    console.log('==========================================\n');
+
+    res.json({ success: true, order: transformedOrder });
+  } catch (error) {
+    console.error('❌ Error fetching order:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch order', error: error.message });
+  }
+});
+
+// ===== UPDATE ORDER STATUS - PUT (EXISTING) =====
 router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const { orderId } = req.params;
     const { status } = req.body;
     const vendorId = req.user._id;
 
-    console.log(`\n📝 Updating order ${orderId} to status: ${status}`);
+    console.log(`\n📝 PUT - Updating order ${orderId} to status: ${status}`);
 
-    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'out_for_delivery', 'delivered', 'cancelled'];
+    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'driver_assigned', 'picked_up', 'on_the_way', 'delivered', 'cancelled'];
     if (!validStatuses.includes(status)) {
       console.log('❌ Invalid status:', status);
       return res.status(400).json({ success: false, message: 'Invalid status' });
@@ -214,19 +329,104 @@ router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (r
     const oldStatus = order.status;
     console.log(`   Old status: ${oldStatus}`);
 
-    // ✅ FIX: Use updateOne to bypass validation for old orders
     const timestampField = 
       status === 'confirmed' ? 'confirmedAt' :
       status === 'preparing' ? 'preparingAt' :
       status === 'ready' ? 'readyAt' :
+      status === 'driver_assigned' ? 'assignedAt' :
       status === 'picked_up' ? 'pickedUpAt' :
+      status === 'on_the_way' ? 'onTheWayAt' :
       status === 'delivered' ? 'deliveredAt' :
       status === 'cancelled' ? 'cancelledAt' : null;
 
-    const updateData = {
-      status: status
+    const updateData = { status: status };
+    if (timestampField) {
+      updateData[`timestamps.${timestampField}`] = new Date();
+    }
+
+    await Order.updateOne(
+      { _id: orderId },
+      { $set: updateData },
+      { runValidators: false }
+    );
+
+    console.log(`✅ Order ${orderId} status updated from ${oldStatus} to ${status}`);
+
+    const updatedOrder = await Order.findById(orderId)
+      .populate('user', 'name email phone')
+      .populate('driver', 'name phone vehicleType vehicleNumber')
+      .populate('restaurant', 'name')
+      .lean();
+
+    const calculations = calculateOrderTotals(updatedOrder);
+
+    const orderResponse = {
+      ...updatedOrder,
+      subtotal: calculations.subtotal,
+      deliveryFee: calculations.deliveryFee,
+      serviceFee: calculations.serviceFee,
+      tax: calculations.tax,
+      discount: calculations.discount,
+      total: calculations.total,
+      customerName: updatedOrder.user?.name || 'Unknown',
+      customerPhone: updatedOrder.user?.phone || 'N/A',
+      driverName: updatedOrder.driver?.name || null,
+      driverPhone: updatedOrder.driver?.phone || null,
+      hasDriver: !!updatedOrder.driver
     };
 
+    res.json({ 
+      success: true, 
+      message: `Order status updated to ${status}`, 
+      order: orderResponse
+    });
+  } catch (error) {
+    console.error('❌ Error updating order status:', error);
+    res.status(500).json({ success: false, message: 'Failed to update status', error: error.message });
+  }
+});
+
+// ===== UPDATE ORDER STATUS - PATCH (NEW - CRITICAL FIX) =====
+router.patch('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { status } = req.body;
+    const vendorId = req.user._id;
+
+    console.log(`\n📝 PATCH - Updating order ${orderId} to status: ${status}`);
+
+    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'driver_assigned', 'picked_up', 'on_the_way', 'delivered', 'cancelled'];
+    if (!validStatuses.includes(status)) {
+      console.log('❌ Invalid status:', status);
+      return res.status(400).json({ success: false, message: 'Invalid status' });
+    }
+
+    const restaurant = await Restaurant.findOne({ owner: vendorId });
+    if (!restaurant) {
+      console.log('❌ Restaurant not found for vendor');
+      return res.status(404).json({ success: false, message: 'Restaurant not found' });
+    }
+
+    const order = await Order.findOne({ _id: orderId, restaurant: restaurant._id }).lean();
+    if (!order) {
+      console.log('❌ Order not found');
+      return res.status(404).json({ success: false, message: 'Order not found or not yours' });
+    }
+
+    const oldStatus = order.status;
+    console.log(`   Old status: ${oldStatus}`);
+
+    const timestampField = 
+      status === 'confirmed' ? 'confirmedAt' :
+      status === 'preparing' ? 'preparingAt' :
+      status === 'ready' ? 'readyAt' :
+      status === 'driver_assigned' ? 'assignedAt' :
+      status === 'picked_up' ? 'pickedUpAt' :
+      status === 'on_the_way' ? 'onTheWayAt' :
+      status === 'delivered' ? 'deliveredAt' :
+      status === 'cancelled' ? 'cancelledAt' : null;
+
+    const updateData = { status: status };
     if (timestampField) {
       updateData[`timestamps.${timestampField}`] = new Date();
       console.log(`   Setting timestamp: timestamps.${timestampField}`);
@@ -240,7 +440,6 @@ router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (r
 
     console.log('   Update data:', updateData);
 
-    // ✅ CRITICAL: Use updateOne with runValidators: false
     await Order.updateOne(
       { _id: orderId },
       { $set: updateData },
@@ -249,18 +448,28 @@ router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (r
 
     console.log(`✅ Order ${orderId} status updated from ${oldStatus} to ${status}`);
 
-    // Fetch updated order
-    const updatedOrder = await Order.findById(orderId).lean();
+    const updatedOrder = await Order.findById(orderId)
+      .populate('user', 'name email phone')
+      .populate('restaurant', 'name')
+      .populate('driver', 'name phone vehicleType vehicleNumber')
+      .lean();
 
-    // Transform response
+    const calculations = calculateOrderTotals(updatedOrder);
+
     const orderResponse = {
-      _id: updatedOrder._id,
-      orderNumber: updatedOrder.orderNumber,
-      previousStatus: oldStatus,
-      status: updatedOrder.status,
-      total: updatedOrder.pricing?.total || updatedOrder.total || 0,
-      subtotal: updatedOrder.pricing?.subtotal || updatedOrder.subtotal || 0,
-      deliveryFee: updatedOrder.pricing?.deliveryFee || updatedOrder.deliveryFee || 0
+      ...updatedOrder,
+      subtotal: calculations.subtotal,
+      deliveryFee: calculations.deliveryFee,
+      serviceFee: calculations.serviceFee,
+      tax: calculations.tax,
+      discount: calculations.discount,
+      total: calculations.total,
+      customerName: updatedOrder.user?.name || 'Unknown',
+      customerPhone: updatedOrder.user?.phone || 'N/A',
+      driverName: updatedOrder.driver?.name || null,
+      driverPhone: updatedOrder.driver?.phone || null,
+      driverVehicle: updatedOrder.driver?.vehicleType || null,
+      hasDriver: !!updatedOrder.driver
     };
 
     res.json({ 
@@ -269,7 +478,7 @@ router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (r
       order: orderResponse
     });
   } catch (error) {
-    console.error('❌ Error updating order status:', error);
+    console.error('❌ Error updating order status (PATCH):', error);
     res.status(500).json({ success: false, message: 'Failed to update status', error: error.message });
   }
 });
@@ -351,6 +560,80 @@ router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
     res.status(201).json({ success: true, message: 'Menu item created', menuItem });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to create menu item', error: error.message });
+  }
+});
+
+// ===== VENDOR STATS =====
+router.get('/stats', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    const restaurant = await Restaurant.findOne({ owner: req.user._id });
+    if (!restaurant) {
+      return res.json({ 
+        success: true, 
+        stats: {
+          totalOrders: 0,
+          pendingOrders: 0,
+          completedOrders: 0,
+          revenue: 0,
+          todayOrders: 0,
+          todayRevenue: 0
+        }
+      });
+    }
+
+    const totalOrders = await Order.countDocuments({ restaurant: restaurant._id });
+    const pendingOrders = await Order.countDocuments({ 
+      restaurant: restaurant._id, 
+      status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] } 
+    });
+    const completedOrders = await Order.countDocuments({ 
+      restaurant: restaurant._id, 
+      status: 'delivered' 
+    });
+
+    const completedOrdersList = await Order.find({ 
+      restaurant: restaurant._id, 
+      status: 'delivered' 
+    }).lean();
+
+    const revenue = completedOrdersList.reduce((sum, order) => {
+      const orderCalc = calculateOrderTotals(order);
+      return sum + orderCalc.total;
+    }, 0);
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const todayOrders = await Order.countDocuments({
+      restaurant: restaurant._id,
+      createdAt: { $gte: todayStart }
+    });
+
+    const todayOrdersList = await Order.find({
+      restaurant: restaurant._id,
+      status: 'delivered',
+      'timestamps.deliveredAt': { $gte: todayStart }
+    }).lean();
+
+    const todayRevenue = todayOrdersList.reduce((sum, order) => {
+      const orderCalc = calculateOrderTotals(order);
+      return sum + orderCalc.total;
+    }, 0);
+
+    res.json({
+      success: true,
+      stats: {
+        totalOrders,
+        pendingOrders,
+        completedOrders,
+        revenue: parseFloat(revenue.toFixed(2)),
+        todayOrders,
+        todayRevenue: parseFloat(todayRevenue.toFixed(2))
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching vendor stats:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch stats', error: error.message });
   }
 });
 

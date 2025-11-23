@@ -1,4 +1,4 @@
-// server.js - FIXED AND OPTIMIZED VERSION
+// server.js - COMPLETE FIXED VERSION WITH VENDORS ROUTES
 require('dotenv').config();
 
 const express = require('express');
@@ -43,6 +43,8 @@ const corsOptions = {
       "http://192.168.1.150:3000",
       "http://192.168.0.129:8081",
       "http://192.168.0.129:19006",
+      "http://192.168.0.234:8081",
+      "http://192.168.0.234:19006",
       "capacitor://localhost",
       "ionic://localhost",
     ];
@@ -98,8 +100,8 @@ const MONGODB_URI = process.env.MONGODB_URI || process.env.MONGO_URI;
 
 // Debug logging
 console.log('\n🔍 Environment Check:');
-console.log('NODE_ENV:', process.env.NODE_ENV);
-console.log('PORT:', process.env.PORT);
+console.log('NODE_ENV:', process.env.NODE_ENV || 'development');
+console.log('PORT:', process.env.PORT || 5000);
 console.log('MONGODB_URI exists:', !!process.env.MONGODB_URI);
 console.log('MONGO_URI exists:', !!process.env.MONGO_URI);
 
@@ -210,6 +212,7 @@ try {
   console.log('   ✅ Vendors routes loaded');
 } catch (e) {
   console.error('   ❌ Vendors routes failed:', e.message);
+  console.error('   💡 Make sure backend/routes/vendors.js exists');
 }
 
 try {
@@ -225,6 +228,10 @@ try {
 } catch (e) {
   console.error('   ❌ Upload routes failed:', e.message);
 }
+
+// ========== STATIC FILES ==========
+const uploadsPath = path.join(__dirname, 'uploads');
+app.use('/uploads', express.static(uploadsPath));
 
 // ========== REGISTER ROUTES ==========
 console.log('🔗 Registering routes...');
@@ -254,9 +261,16 @@ if (paymentRoutes) {
   console.log('   ✅ /api/payments registered');
 }
 
+// CRITICAL: Register vendors routes
 if (vendorRoutes) {
   app.use('/api/vendors', vendorRoutes);
   console.log('   ✅ /api/vendors registered');
+  console.log('   📍 /api/vendors/orders - GET vendor orders');
+  console.log('   📍 /api/vendors/orders/:id/status - PATCH update order status');
+  console.log('   📍 /api/vendors/restaurant - GET vendor restaurant');
+  console.log('   📍 /api/vendors/menu - GET vendor menu');
+} else {
+  console.error('   ❌ /api/vendors NOT registered - vendors.js file missing or has errors!');
 }
 
 if (driverRoutes) {
@@ -268,10 +282,6 @@ if (uploadRoutes) {
   app.use('/api/upload', uploadRoutes);
   console.log('   ✅ /api/upload registered');
 }
-
-// ========== STATIC FILES ==========
-const uploadsPath = path.join(__dirname, 'uploads');
-app.use('/uploads', express.static(uploadsPath));
 
 // ========== API ENDPOINTS ==========
 
@@ -339,14 +349,11 @@ app.get('/', (req, res) => {
       drivers: '/api/drivers',
       upload: '/api/upload'
     },
-    documentation: {
-      orders: {
-        myOrders: 'GET /api/orders/my-orders',
-        allOrders: 'GET /api/orders',
-        createOrder: 'POST /api/orders',
-        orderDetails: 'GET /api/orders/:id',
-        testDebug: 'GET /api/orders/test-debug'
-      }
+    vendorEndpoints: {
+      getOrders: 'GET /api/vendors/orders',
+      updateOrderStatus: 'PATCH /api/vendors/orders/:id/status',
+      getRestaurant: 'GET /api/vendors/restaurant',
+      getMenu: 'GET /api/vendors/menu'
     }
   });
 });
@@ -355,32 +362,39 @@ app.get('/', (req, res) => {
 app.get('/api/debug/routes', (req, res) => {
   const routes = [];
   
-  app._router.stack.forEach((middleware) => {
-    if (middleware.route) {
-      routes.push({
-        path: middleware.route.path,
-        methods: Object.keys(middleware.route.methods)
-      });
-    } else if (middleware.name === 'router') {
-      middleware.handle.stack.forEach((handler) => {
-        if (handler.route) {
-          const path = middleware.regexp.source
-            .replace('\\/?', '')
-            .replace('(?=\\/|$)', '')
-            .replace(/\\\//g, '/');
-          routes.push({
-            path: path + handler.route.path,
-            methods: Object.keys(handler.route.methods)
-          });
+  function extractRoutes(stack, prefix = '') {
+    stack.forEach((middleware) => {
+      if (middleware.route) {
+        const methods = Object.keys(middleware.route.methods).join(', ').toUpperCase();
+        routes.push({
+          path: prefix + middleware.route.path,
+          methods: methods
+        });
+      } else if (middleware.name === 'router') {
+        const routerPath = middleware.regexp.source
+          .replace('\\/?', '')
+          .replace('(?=\\/|$)', '')
+          .replace(/\\\//g, '/')
+          .replace('^', '')
+          .replace('$', '');
+        
+        if (middleware.handle.stack) {
+          extractRoutes(middleware.handle.stack, routerPath);
         }
-      });
-    }
-  });
+      }
+    });
+  }
+  
+  extractRoutes(app._router.stack);
+  
+  // Sort routes alphabetically
+  routes.sort((a, b) => a.path.localeCompare(b.path));
   
   res.json({
     success: true,
     totalRoutes: routes.length,
-    routes: routes
+    routes: routes,
+    vendorRoutes: routes.filter(r => r.path.includes('/vendors'))
   });
 });
 
@@ -428,13 +442,18 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('   ✅ /api/restaurants  - Restaurants');
   console.log('   ✅ /api/orders       - Order management 🎯');
   console.log('   ✅ /api/payments     - Payments');
-  console.log('   ✅ /api/vendors      - Vendor operations');
+  console.log('   ✅ /api/vendors      - Vendor operations 🏪');
   console.log('   ✅ /api/drivers      - Driver operations');
   console.log('   ✅ /api/upload       - Image uploads');
   console.log('');
+  console.log('🏪 Vendor Routes:');
+  console.log('   📍 GET    /api/vendors/orders');
+  console.log('   📍 PATCH  /api/vendors/orders/:id/status ⭐');
+  console.log('   📍 GET    /api/vendors/restaurant');
+  console.log('   📍 GET    /api/vendors/menu');
+  console.log('');
   console.log('🧪 Quick Tests:');
   console.log(`   curl http://localhost:${PORT}/api/health`);
-  console.log(`   curl http://localhost:${PORT}/api/orders/test-debug`);
   console.log(`   curl http://localhost:${PORT}/api/debug/routes`);
   console.log('');
   const cloudinaryConfigured = !!(
@@ -452,6 +471,16 @@ server.listen(PORT, '0.0.0.0', () => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('SIGTERM received, closing server...');
+  server.close(() => {
+    mongoose.connection.close(false, () => {
+      console.log('MongoDB connection closed');
+      process.exit(0);
+    });
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('\nSIGINT received, closing server...');
   server.close(() => {
     mongoose.connection.close(false, () => {
       console.log('MongoDB connection closed');

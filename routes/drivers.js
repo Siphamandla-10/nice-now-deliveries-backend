@@ -147,7 +147,7 @@ router.get('/active-deliveries', auth, isDriver, async (req, res) => {
     res.json({ 
       success: true, 
       count: transformedOrders.length, 
-      orders: transformedOrders 
+      deliveries: transformedOrders  // Changed from 'orders' to 'deliveries'
     });
   } catch (error) {
     console.error('❌ Error fetching active deliveries:', error);
@@ -199,6 +199,216 @@ router.get('/completed-deliveries', auth, isDriver, async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: 'Failed to fetch completed deliveries' 
+    });
+  }
+});
+
+// ==========================================
+// ACCEPT ORDER (ASSIGN DRIVER) - UPDATED ROUTE
+// ==========================================
+router.post('/deliveries/:orderId/accept', auth, isDriver, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    
+    console.log(`\n========== 🚗 DRIVER ACCEPTING ORDER ==========`);
+    console.log('Order ID:', orderId);
+    console.log('Driver ID:', req.user.id);
+    console.log('Driver Name:', req.user.name);
+    
+    const order = await Order.findById(orderId);
+    
+    if (!order) {
+      console.log('❌ Order not found');
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Order not found' 
+      });
+    }
+    
+    if (order.driver) {
+      console.log('❌ Order already assigned');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Order already assigned to another driver' 
+      });
+    }
+    
+    if (order.status !== 'ready') {
+      console.log('❌ Order not ready. Current status:', order.status);
+      return res.status(400).json({ 
+        success: false, 
+        error: `Order is not ready for pickup. Current status: ${order.status}` 
+      });
+    }
+    
+    // Update order with driver assignment
+    order.driver = req.user.id;
+    order.status = 'driver_assigned';
+    order.driverStatus = 'accepted';
+    
+    // Update timestamps
+    if (!order.timestamps) {
+      order.timestamps = {};
+    }
+    order.timestamps.assignedAt = new Date();
+    
+    await order.save();
+    
+    // Fetch updated order with populated fields
+    const updatedOrder = await Order.findById(orderId)
+      .populate('restaurant', 'name address contact')
+      .populate('user', 'name phone')
+      .populate('driver', 'name phone')
+      .lean();
+    
+    const transformedOrder = {
+      ...updatedOrder,
+      total: updatedOrder.pricing?.total || updatedOrder.total || 0,
+      subtotal: updatedOrder.pricing?.subtotal || updatedOrder.subtotal || 0,
+      deliveryFee: updatedOrder.pricing?.deliveryFee || updatedOrder.deliveryFee || 0,
+      driverEarnings: updatedOrder.driverEarnings || updatedOrder.pricing?.driverPayout || 20
+    };
+    
+    console.log('✅ Order accepted by driver successfully');
+    console.log('   Driver Name:', req.user.name);
+    console.log('   Order Status:', transformedOrder.status);
+    console.log('   Driver Earnings:', transformedOrder.driverEarnings);
+    console.log('=========================================\n');
+    
+    res.json({ 
+      success: true, 
+      message: 'Order accepted successfully', 
+      order: transformedOrder,
+      delivery: transformedOrder  // Also return as 'delivery' for compatibility
+    });
+  } catch (error) {
+    console.error('❌ Error accepting order:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to accept order', 
+      details: error.message 
+    });
+  }
+});
+
+// ==========================================
+// DECLINE ORDER - NEW ROUTE
+// ==========================================
+router.post('/deliveries/:orderId/decline', auth, isDriver, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    
+    console.log(`\n========== ❌ DRIVER DECLINING ORDER ==========`);
+    console.log('Order ID:', orderId);
+    console.log('Driver ID:', req.user.id);
+    
+    const order = await Order.findById(orderId);
+    
+    if (!order) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Order not found' 
+      });
+    }
+    
+    console.log('✅ Order declined by driver');
+    console.log('=========================================\n');
+    
+    res.json({ 
+      success: true, 
+      message: 'Order declined successfully' 
+    });
+  } catch (error) {
+    console.error('❌ Error declining order:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to decline order' 
+    });
+  }
+});
+
+// ==========================================
+// UPDATE DELIVERY STATUS
+// ==========================================
+router.patch('/deliveries/:orderId/status', auth, isDriver, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { status } = req.body;
+    
+    console.log(`\n========== 🚗 UPDATING DELIVERY STATUS ==========`);
+    console.log('Order ID:', orderId);
+    console.log('New Status:', status);
+    console.log('Driver ID:', req.user.id);
+    
+    const order = await Order.findById(orderId);
+    
+    if (!order) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Order not found' 
+      });
+    }
+    
+    if (!order.driver || order.driver.toString() !== req.user.id) {
+      return res.status(403).json({ 
+        success: false, 
+        error: 'Unauthorized to update this order' 
+      });
+    }
+    
+    const validStatuses = ['picked_up', 'on_the_way', 'delivered'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid status' 
+      });
+    }
+    
+    order.status = status;
+    
+    // Update timestamps
+    if (!order.timestamps) {
+      order.timestamps = {};
+    }
+    
+    if (status === 'picked_up') {
+      order.timestamps.pickedUpAt = new Date();
+    } else if (status === 'on_the_way') {
+      order.timestamps.onTheWayAt = new Date();
+    } else if (status === 'delivered') {
+      order.timestamps.deliveredAt = new Date();
+    }
+    
+    await order.save();
+    
+    const updatedOrder = await Order.findById(orderId)
+      .populate('restaurant', 'name')
+      .populate('user', 'name phone')
+      .populate('driver', 'name phone')
+      .lean();
+    
+    const transformedOrder = {
+      ...updatedOrder,
+      total: updatedOrder.pricing?.total || updatedOrder.total || 0,
+      subtotal: updatedOrder.pricing?.subtotal || updatedOrder.subtotal || 0,
+      deliveryFee: updatedOrder.pricing?.deliveryFee || updatedOrder.deliveryFee || 0,
+      driverEarnings: updatedOrder.driverEarnings || updatedOrder.pricing?.driverPayout || 0
+    };
+    
+    console.log(`✅ Order status updated to: ${status}`);
+    console.log('=========================================\n');
+    
+    res.json({ 
+      success: true, 
+      message: `Order status updated to ${status}`, 
+      order: transformedOrder 
+    });
+  } catch (error) {
+    console.error('❌ Error updating delivery status:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to update status', 
+      details: error.message 
     });
   }
 });
@@ -290,143 +500,6 @@ router.post('/toggle-availability', auth, isDriver, async (req, res) => {
 });
 
 // ==========================================
-// ACCEPT ORDER (ASSIGN DRIVER)
-// ==========================================
-router.post('/accept-order/:orderId', auth, isDriver, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    
-    console.log(`\n========== 🚗 DRIVER ACCEPTING ORDER ==========`);
-    console.log('Order ID:', orderId);
-    console.log('Driver ID:', req.user.id);
-    
-    const order = await Order.findById(orderId).lean();
-    
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-    
-    if (order.driver) {
-      return res.status(400).json({ error: 'Order already assigned to another driver' });
-    }
-    
-    if (order.status !== 'ready') {
-      return res.status(400).json({ error: 'Order is not ready for pickup' });
-    }
-    
-    // Update order with driver assignment
-    await Order.updateOne(
-      { _id: orderId },
-      { 
-        $set: { 
-          driver: req.user.id,
-          status: 'driver_assigned',
-          driverStatus: 'accepted',
-          'timestamps.assignedAt': new Date()
-        } 
-      },
-      { runValidators: false }
-    );
-    
-    const updatedOrder = await Order.findById(orderId)
-      .populate('restaurant', 'name address contact')
-      .populate('user', 'name phone')
-      .lean();
-    
-    const transformedOrder = {
-      ...updatedOrder,
-      total: updatedOrder.pricing?.total || updatedOrder.total || 0,
-      subtotal: updatedOrder.pricing?.subtotal || updatedOrder.subtotal || 0,
-      deliveryFee: updatedOrder.pricing?.deliveryFee || updatedOrder.deliveryFee || 0,
-      driverEarnings: updatedOrder.driverEarnings || updatedOrder.pricing?.driverPayout || 0
-    };
-    
-    console.log('✅ Order accepted by driver');
-    console.log('=========================================\n');
-    
-    res.json({ 
-      success: true, 
-      message: 'Order accepted successfully', 
-      order: transformedOrder 
-    });
-  } catch (error) {
-    console.error('❌ Error accepting order:', error);
-    res.status(500).json({ error: 'Failed to accept order', details: error.message });
-  }
-});
-
-// ==========================================
-// UPDATE DELIVERY STATUS
-// ==========================================
-router.put('/update-status/:orderId', auth, isDriver, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const { status } = req.body;
-    
-    console.log(`\n========== 🚗 UPDATING DELIVERY STATUS ==========`);
-    console.log('Order ID:', orderId);
-    console.log('New Status:', status);
-    console.log('Driver ID:', req.user.id);
-    
-    const order = await Order.findById(orderId).lean();
-    
-    if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-    
-    if (!order.driver || order.driver.toString() !== req.user.id) {
-      return res.status(403).json({ error: 'Unauthorized to update this order' });
-    }
-    
-    const validStatuses = ['picked_up', 'on_the_way', 'delivered'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({ error: 'Invalid status' });
-    }
-    
-    const timestampField = 
-      status === 'picked_up' ? 'pickedUpAt' :
-      status === 'on_the_way' ? 'onTheWayAt' :
-      status === 'delivered' ? 'deliveredAt' : null;
-    
-    const updateData = { status: status };
-    if (timestampField) {
-      updateData[`timestamps.${timestampField}`] = new Date();
-    }
-    
-    await Order.updateOne(
-      { _id: orderId },
-      { $set: updateData },
-      { runValidators: false }
-    );
-    
-    const updatedOrder = await Order.findById(orderId)
-      .populate('restaurant', 'name')
-      .populate('user', 'name phone')
-      .lean();
-    
-    const transformedOrder = {
-      ...updatedOrder,
-      total: updatedOrder.pricing?.total || updatedOrder.total || 0,
-      subtotal: updatedOrder.pricing?.subtotal || updatedOrder.subtotal || 0,
-      deliveryFee: updatedOrder.pricing?.deliveryFee || updatedOrder.deliveryFee || 0,
-      driverEarnings: updatedOrder.driverEarnings || updatedOrder.pricing?.driverPayout || 0
-    };
-    
-    console.log(`✅ Order status updated to: ${status}`);
-    console.log('=========================================\n');
-    
-    res.json({ 
-      success: true, 
-      message: `Order status updated to ${status}`, 
-      order: transformedOrder 
-    });
-  } catch (error) {
-    console.error('❌ Error updating delivery status:', error);
-    res.status(500).json({ error: 'Failed to update status', details: error.message });
-  }
-});
-
-// ==========================================
 // GET SPECIFIC ORDER DETAILS (DRIVER)
 // ==========================================
 router.get('/:id', auth, isDriver, async (req, res) => {
@@ -434,13 +507,14 @@ router.get('/:id', auth, isDriver, async (req, res) => {
     const order = await Order.findById(req.params.id)
       .populate('restaurant', 'name address contact')
       .populate('user', 'name phone')
+      .populate('driver', 'name phone')
       .lean();
     
     if (!order) {
       return res.status(404).json({ error: 'Order not found' });
     }
     
-    if (order.driver && order.driver.toString() !== req.user.id) {
+    if (order.driver && order.driver._id.toString() !== req.user.id) {
       return res.status(403).json({ error: 'Unauthorized to view this order' });
     }
     
