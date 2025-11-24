@@ -1,4 +1,4 @@
-﻿// routes/vendors.js - COMPLETE FIXED VERSION WITH DRIVER POPULATION AND CORRECT CALCULATIONS
+﻿// routes/vendors.js - FIXED VERSION WITH CORRECT CALCULATIONS (NO DISCREPANCIES)
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -44,9 +44,72 @@ const deleteFile = async (publicId) => {
   }
 };
 
-// ===== HELPER: CALCULATE ORDER TOTALS =====
+// ===== HELPER: CALCULATE ORDER TOTALS - FIXED VERSION =====
+/**
+ * ✅ FIXED: This function now ONLY uses stored pricing to prevent discrepancies
+ * 
+ * WHY: Recalculating from items causes issues because:
+ * 1. Menu item prices can change after order is placed
+ * 2. Floating point arithmetic creates rounding errors
+ * 3. Multiple calculation points lead to inconsistencies
+ * 
+ * SOLUTION: Always use the pricing that was stored at payment time
+ */
 const calculateOrderTotals = (order) => {
-  // Calculate subtotal from items
+  console.log(`\n[CALC] Processing order ${order._id || order.id}`);
+  
+  // ✅ CRITICAL FIX: Always prioritize stored pricing (from payment time)
+  if (order.pricing && typeof order.pricing === 'object') {
+    console.log('[CALC] Using stored pricing from database');
+    
+    // Use integer arithmetic to avoid floating point errors
+    const subtotalCents = Math.round((order.pricing.subtotal || 0) * 100);
+    const deliveryFeeCents = Math.round((order.pricing.deliveryFee || 0) * 100);
+    const serviceFeeCents = Math.round((order.pricing.serviceFee || 0) * 100);
+    const taxCents = Math.round((order.pricing.tax || 0) * 100);
+    const discountCents = Math.round((order.pricing.discount || 0) * 100);
+    
+    // Calculate total in cents (integer math - no rounding errors)
+    const totalCents = subtotalCents + deliveryFeeCents + serviceFeeCents + taxCents - discountCents;
+    
+    const result = {
+      subtotal: subtotalCents / 100,
+      deliveryFee: deliveryFeeCents / 100,
+      serviceFee: serviceFeeCents / 100,
+      tax: taxCents / 100,
+      discount: discountCents / 100,
+      total: totalCents / 100
+    };
+    
+    console.log('[CALC] Stored pricing values:', result);
+    
+    // ⚠️ VALIDATION: Check if recalculating would give different result
+    if (order.items && Array.isArray(order.items)) {
+      let recalculatedSubtotal = 0;
+      order.items.forEach(item => {
+        const itemPrice = item.price || 0;
+        const itemQuantity = item.quantity || 1;
+        recalculatedSubtotal += (itemPrice * itemQuantity);
+      });
+      
+      const storedSubtotal = order.pricing.subtotal || 0;
+      const difference = Math.abs(recalculatedSubtotal - storedSubtotal);
+      
+      if (difference > 0.01) {
+        console.warn(`⚠️ [CALC WARNING] Subtotal discrepancy detected!`);
+        console.warn(`   Stored subtotal: R${storedSubtotal.toFixed(2)}`);
+        console.warn(`   Recalculated:    R${recalculatedSubtotal.toFixed(2)}`);
+        console.warn(`   Difference:      R${difference.toFixed(2)}`);
+        console.warn(`   This is why we use STORED pricing!`);
+      }
+    }
+    
+    return result;
+  }
+  
+  // ⚠️ FALLBACK: Only if no pricing stored (shouldn't happen for paid orders)
+  console.warn('[CALC] ⚠️ No stored pricing found - calculating from items (this may be inaccurate)');
+  
   let calculatedSubtotal = 0;
   if (order.items && Array.isArray(order.items)) {
     calculatedSubtotal = order.items.reduce((sum, item) => {
@@ -55,27 +118,28 @@ const calculateOrderTotals = (order) => {
       return sum + (itemPrice * itemQuantity);
     }, 0);
   }
-
-  // Get fees from pricing or fallback to order level
-  const deliveryFee = order.pricing?.deliveryFee || order.deliveryFee || 0;
-  const serviceFee = order.pricing?.serviceFee || order.serviceFee || 0;
-  const tax = order.pricing?.tax || order.tax || 0;
-  const discount = order.pricing?.discount || order.discount || 0;
-
-  // Use pricing.subtotal if available, otherwise use calculated
-  const subtotal = order.pricing?.subtotal || calculatedSubtotal;
-
-  // Calculate total
-  const total = subtotal + deliveryFee + serviceFee + tax - discount;
-
-  return {
-    subtotal: parseFloat(subtotal.toFixed(2)),
-    deliveryFee: parseFloat(deliveryFee.toFixed(2)),
-    serviceFee: parseFloat(serviceFee.toFixed(2)),
-    tax: parseFloat(tax.toFixed(2)),
-    discount: parseFloat(discount.toFixed(2)),
-    total: parseFloat(total.toFixed(2))
+  
+  // Use integer arithmetic for fees too
+  const deliveryFeeCents = Math.round((order.deliveryFee || 0) * 100);
+  const serviceFeeCents = Math.round((order.serviceFee || 0) * 100);
+  const taxCents = Math.round((order.tax || 0) * 100);
+  const discountCents = Math.round((order.discount || 0) * 100);
+  const subtotalCents = Math.round(calculatedSubtotal * 100);
+  
+  const totalCents = subtotalCents + deliveryFeeCents + serviceFeeCents + taxCents - discountCents;
+  
+  const result = {
+    subtotal: subtotalCents / 100,
+    deliveryFee: deliveryFeeCents / 100,
+    serviceFee: serviceFeeCents / 100,
+    tax: taxCents / 100,
+    discount: discountCents / 100,
+    total: totalCents / 100
   };
+  
+  console.log('[CALC] Fallback calculation:', result);
+  
+  return result;
 };
 
 // ===== TEST ROUTE =====
@@ -148,7 +212,7 @@ router.put('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => 
   }
 });
 
-// ===== VENDOR ORDERS - WITH DRIVER POPULATION AND CORRECT CALCULATIONS =====
+// ===== VENDOR ORDERS - WITH CORRECT CALCULATIONS =====
 router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const vendorId = req.user._id;
@@ -166,17 +230,15 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
     const { status } = req.query;
     const query = { restaurant: restaurant._id };
     
-    // If status filter is provided, use it; otherwise show active orders
     if (status) {
       query.status = status;
     } else {
-      // Default: show active orders (not delivered or cancelled)
       query.status = { $in: ['pending', 'confirmed', 'preparing', 'ready', 'driver_assigned', 'picked_up', 'on_the_way'] };
     }
 
     const orders = await Order.find(query)
       .populate('user', 'name email phone')
-      .populate('driver', 'name phone vehicleType vehicleNumber') // ✅ POPULATE DRIVER
+      .populate('driver', 'name phone vehicleType vehicleNumber')
       .populate('restaurant', 'name')
       .populate('items.menuItem', 'name price')
       .lean()
@@ -185,13 +247,13 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
 
     console.log('📦 Orders found:', orders.length);
     
-    // ✅ Transform orders with correct calculations and driver info
+    // ✅ Transform orders with STORED pricing (prevents discrepancies)
     const transformedOrders = orders.map(order => {
       const calculations = calculateOrderTotals(order);
       
       const transformed = {
         ...order,
-        // Correct calculated totals
+        // ✅ Use calculated values (which are based on STORED pricing)
         subtotal: calculations.subtotal,
         deliveryFee: calculations.deliveryFee,
         serviceFee: calculations.serviceFee,
@@ -202,13 +264,13 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
         customerName: order.user?.name || 'Unknown',
         customerPhone: order.user?.phone || 'N/A',
         customerEmail: order.user?.email || 'N/A',
-        // Driver info (if assigned)
+        // Driver info
         driverName: order.driver?.name || null,
         driverPhone: order.driver?.phone || null,
         driverVehicle: order.driver?.vehicleType || null,
         driverVehicleNumber: order.driver?.vehicleNumber || null,
         hasDriver: !!order.driver,
-        // Keep original objects too
+        // Keep original objects
         pricing: order.pricing,
         driver: order.driver,
         user: order.user
@@ -222,10 +284,8 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
       console.log('   ID:', transformedOrders[0]._id);
       console.log('   Status:', transformedOrders[0].status);
       console.log('   Subtotal:', transformedOrders[0].subtotal);
-      console.log('   Delivery Fee:', transformedOrders[0].deliveryFee);
-      console.log('   Service Fee:', transformedOrders[0].serviceFee);
       console.log('   Total:', transformedOrders[0].total);
-      console.log('   Driver:', transformedOrders[0].driverName || 'Not assigned');
+      console.log('   Has stored pricing:', !!transformedOrders[0].pricing);
     }
     console.log('==========================================\n');
 
@@ -249,7 +309,6 @@ router.get('/orders/:orderId', authMiddleware, vendorMiddleware, async (req, res
 
     console.log('\n========== GET SINGLE VENDOR ORDER ==========');
     console.log('Order ID:', orderId);
-    console.log('Vendor ID:', vendorId);
 
     const restaurant = await Restaurant.findOne({ owner: vendorId });
     if (!restaurant) {
@@ -289,7 +348,6 @@ router.get('/orders/:orderId', authMiddleware, vendorMiddleware, async (req, res
 
     console.log('✅ Order found:', order.orderNumber);
     console.log('   Total:', transformedOrder.total);
-    console.log('   Driver:', transformedOrder.driverName || 'Not assigned');
     console.log('==========================================\n');
 
     res.json({ success: true, order: transformedOrder });
@@ -299,7 +357,7 @@ router.get('/orders/:orderId', authMiddleware, vendorMiddleware, async (req, res
   }
 });
 
-// ===== UPDATE ORDER STATUS - PUT (EXISTING) =====
+// ===== UPDATE ORDER STATUS - PUT =====
 router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -316,18 +374,13 @@ router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (r
 
     const restaurant = await Restaurant.findOne({ owner: vendorId });
     if (!restaurant) {
-      console.log('❌ Restaurant not found for vendor');
       return res.status(404).json({ success: false, message: 'Restaurant not found' });
     }
 
     const order = await Order.findOne({ _id: orderId, restaurant: restaurant._id }).lean();
     if (!order) {
-      console.log('❌ Order not found');
       return res.status(404).json({ success: false, message: 'Order not found or not yours' });
     }
-
-    const oldStatus = order.status;
-    console.log(`   Old status: ${oldStatus}`);
 
     const timestampField = 
       status === 'confirmed' ? 'confirmedAt' :
@@ -350,7 +403,7 @@ router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (r
       { runValidators: false }
     );
 
-    console.log(`✅ Order ${orderId} status updated from ${oldStatus} to ${status}`);
+    console.log(`✅ Order ${orderId} status updated to ${status}`);
 
     const updatedOrder = await Order.findById(orderId)
       .populate('user', 'name email phone')
@@ -386,7 +439,7 @@ router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (r
   }
 });
 
-// ===== UPDATE ORDER STATUS - PATCH (NEW - CRITICAL FIX) =====
+// ===== UPDATE ORDER STATUS - PATCH =====
 router.patch('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -397,24 +450,18 @@ router.patch('/orders/:orderId/status', authMiddleware, vendorMiddleware, async 
 
     const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'driver_assigned', 'picked_up', 'on_the_way', 'delivered', 'cancelled'];
     if (!validStatuses.includes(status)) {
-      console.log('❌ Invalid status:', status);
       return res.status(400).json({ success: false, message: 'Invalid status' });
     }
 
     const restaurant = await Restaurant.findOne({ owner: vendorId });
     if (!restaurant) {
-      console.log('❌ Restaurant not found for vendor');
       return res.status(404).json({ success: false, message: 'Restaurant not found' });
     }
 
     const order = await Order.findOne({ _id: orderId, restaurant: restaurant._id }).lean();
     if (!order) {
-      console.log('❌ Order not found');
       return res.status(404).json({ success: false, message: 'Order not found or not yours' });
     }
-
-    const oldStatus = order.status;
-    console.log(`   Old status: ${oldStatus}`);
 
     const timestampField = 
       status === 'confirmed' ? 'confirmedAt' :
@@ -429,16 +476,12 @@ router.patch('/orders/:orderId/status', authMiddleware, vendorMiddleware, async 
     const updateData = { status: status };
     if (timestampField) {
       updateData[`timestamps.${timestampField}`] = new Date();
-      console.log(`   Setting timestamp: timestamps.${timestampField}`);
     }
 
-    // Update driver status if applicable
     if (status === 'driver_assigned') updateData.driverStatus = 'accepted';
     if (status === 'picked_up') updateData.driverStatus = 'picked_up';
     if (status === 'on_the_way') updateData.driverStatus = 'on_the_way';
     if (status === 'delivered') updateData.driverStatus = 'delivered';
-
-    console.log('   Update data:', updateData);
 
     await Order.updateOne(
       { _id: orderId },
@@ -446,7 +489,7 @@ router.patch('/orders/:orderId/status', authMiddleware, vendorMiddleware, async 
       { runValidators: false }
     );
 
-    console.log(`✅ Order ${orderId} status updated from ${oldStatus} to ${status}`);
+    console.log(`✅ Order ${orderId} status updated to ${status}`);
 
     const updatedOrder = await Order.findById(orderId)
       .populate('user', 'name email phone')
@@ -563,7 +606,7 @@ router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
   }
 });
 
-// ===== VENDOR STATS =====
+// ===== VENDOR STATS - WITH CORRECT REVENUE CALCULATION =====
 router.get('/stats', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const restaurant = await Restaurant.findOne({ owner: req.user._id });
@@ -596,6 +639,7 @@ router.get('/stats', authMiddleware, vendorMiddleware, async (req, res) => {
       status: 'delivered' 
     }).lean();
 
+    // ✅ Use stored pricing for revenue calculation
     const revenue = completedOrdersList.reduce((sum, order) => {
       const orderCalc = calculateOrderTotals(order);
       return sum + orderCalc.total;
@@ -615,6 +659,7 @@ router.get('/stats', authMiddleware, vendorMiddleware, async (req, res) => {
       'timestamps.deliveredAt': { $gte: todayStart }
     }).lean();
 
+    // ✅ Use stored pricing for today's revenue
     const todayRevenue = todayOrdersList.reduce((sum, order) => {
       const orderCalc = calculateOrderTotals(order);
       return sum + orderCalc.total;
