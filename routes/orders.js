@@ -4,7 +4,7 @@ const Order = require('../models/Order');
 const { auth } = require('../middleware/auth');
 
 // ==========================================
-// GET CUSTOMER ORDERS
+// GET CUSTOMER ORDERS - SIMPLIFIED PRICING
 // ==========================================
 router.get('/', auth, async (req, res) => {
   try {
@@ -15,7 +15,6 @@ router.get('/', auth, async (req, res) => {
     const { page = 1, limit = 20 } = req.query;
     const skip = (page - 1) * limit;
 
-    // ✅ FIXED: Use 'user' instead of 'customer' to match Order model
     const orders = await Order.find({ user: req.user.id })
       .populate('restaurant', 'name image coverImage displayName')
       .populate('items.menuItem', 'name price image')
@@ -30,21 +29,34 @@ router.get('/', auth, async (req, res) => {
     console.log('📦 Orders found:', orders.length);
     console.log('📊 Total orders:', total);
     
-    // Transform orders to ensure consistent pricing structure
-    const transformedOrders = orders.map(order => ({
-      ...order,
-      id: order._id,
-      total: order.pricing?.total || order.total || 0,
-      subtotal: order.pricing?.subtotal || order.subtotal || 0,
-      deliveryFee: order.pricing?.deliveryFee || order.deliveryFee || 0,
-      tax: order.pricing?.tax || order.tax || 0,
-      serviceFee: order.pricing?.serviceFee || order.serviceFee || 0
-    }));
+    // ✅ Transform orders - ONLY Subtotal + Delivery Fee + Tax (15%)
+    const transformedOrders = orders.map(order => {
+      // Get stored values from pricing object (saved at payment time)
+      const subtotal = order.pricing?.subtotal || order.subtotal || 0;
+      const deliveryFee = order.pricing?.deliveryFee || order.deliveryFee || 0;
+      const tax = order.pricing?.tax || order.tax || 0;
+      
+      // Calculate total: Subtotal + Delivery Fee + Tax ONLY
+      const total = subtotal + deliveryFee + tax;
+      
+      return {
+        ...order,
+        id: order._id,
+        // Only include these 4 fields for pricing
+        subtotal: parseFloat(subtotal.toFixed(2)),
+        deliveryFee: parseFloat(deliveryFee.toFixed(2)),
+        tax: parseFloat(tax.toFixed(2)),
+        total: parseFloat(total.toFixed(2))
+      };
+    });
 
     if (transformedOrders.length > 0) {
-      console.log('✅ Sample order:');
+      console.log('✅ Sample order pricing:');
       console.log('   Order Number:', transformedOrders[0].orderNumber);
       console.log('   Status:', transformedOrders[0].status);
+      console.log('   Subtotal:', transformedOrders[0].subtotal);
+      console.log('   Delivery Fee:', transformedOrders[0].deliveryFee);
+      console.log('   Tax (15%):', transformedOrders[0].tax);
       console.log('   Total:', transformedOrders[0].total);
     }
     console.log('===============================================\n');
@@ -70,7 +82,7 @@ router.get('/', auth, async (req, res) => {
 });
 
 // ==========================================
-// GET SINGLE ORDER BY ID
+// GET SINGLE ORDER BY ID - SIMPLIFIED PRICING
 // ==========================================
 router.get('/:id', auth, async (req, res) => {
   try {
@@ -80,7 +92,7 @@ router.get('/:id', auth, async (req, res) => {
     
     const order = await Order.findOne({ 
       _id: req.params.id,
-      user: req.user.id // ✅ FIXED: Use 'user' instead of 'customer'
+      user: req.user.id
     })
       .populate('restaurant', 'name image coverImage displayName address contact')
       .populate('items.menuItem', 'name price image description')
@@ -95,18 +107,23 @@ router.get('/:id', auth, async (req, res) => {
       });
     }
 
-    // Transform order
+    // ✅ Transform order - ONLY Subtotal + Delivery Fee + Tax (15%)
+    const subtotal = order.pricing?.subtotal || order.subtotal || 0;
+    const deliveryFee = order.pricing?.deliveryFee || order.deliveryFee || 0;
+    const tax = order.pricing?.tax || order.tax || 0;
+    const total = subtotal + deliveryFee + tax;
+
     const transformedOrder = {
       ...order,
       id: order._id,
-      total: order.pricing?.total || order.total || 0,
-      subtotal: order.pricing?.subtotal || order.subtotal || 0,
-      deliveryFee: order.pricing?.deliveryFee || order.deliveryFee || 0,
-      tax: order.pricing?.tax || order.tax || 0,
-      serviceFee: order.pricing?.serviceFee || order.serviceFee || 0
+      subtotal: parseFloat(subtotal.toFixed(2)),
+      deliveryFee: parseFloat(deliveryFee.toFixed(2)),
+      tax: parseFloat(tax.toFixed(2)),
+      total: parseFloat(total.toFixed(2))
     };
 
     console.log('✅ Order found:', transformedOrder.orderNumber);
+    console.log('   Total:', transformedOrder.total);
     console.log('=========================================\n');
 
     res.json({
@@ -134,7 +151,7 @@ router.patch('/:id/cancel', auth, async (req, res) => {
     
     const order = await Order.findOne({
       _id: req.params.id,
-      user: req.user.id // ✅ FIXED: Use 'user' instead of 'customer'
+      user: req.user.id
     });
 
     if (!order) {

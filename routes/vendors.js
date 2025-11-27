@@ -1,4 +1,4 @@
-﻿// routes/vendors.js - FIXED VERSION WITH CORRECT CALCULATIONS (NO DISCREPANCIES)
+﻿// routes/vendors.js - COMPLETE CORRECTED VERSION WITH SIMPLIFIED PRICING
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -44,101 +44,55 @@ const deleteFile = async (publicId) => {
   }
 };
 
-// ===== HELPER: CALCULATE ORDER TOTALS - FIXED VERSION =====
+// ===== HELPER: CALCULATE ORDER TOTALS - SIMPLIFIED VERSION =====
 /**
- * ✅ FIXED: This function now ONLY uses stored pricing to prevent discrepancies
+ * ✅ SIMPLIFIED: Only calculates Subtotal + Delivery Fee + Tax (15%)
  * 
- * WHY: Recalculating from items causes issues because:
- * 1. Menu item prices can change after order is placed
- * 2. Floating point arithmetic creates rounding errors
- * 3. Multiple calculation points lead to inconsistencies
+ * Formula: Total = Subtotal + Delivery Fee + Tax
  * 
- * SOLUTION: Always use the pricing that was stored at payment time
+ * WHY: Always use stored pricing to prevent discrepancies when menu prices change
  */
 const calculateOrderTotals = (order) => {
   console.log(`\n[CALC] Processing order ${order._id || order.id}`);
   
-  // ✅ CRITICAL FIX: Always prioritize stored pricing (from payment time)
+  // ✅ ALWAYS prioritize stored pricing (from payment time)
   if (order.pricing && typeof order.pricing === 'object') {
     console.log('[CALC] Using stored pricing from database');
     
-    // Use integer arithmetic to avoid floating point errors
-    const subtotalCents = Math.round((order.pricing.subtotal || 0) * 100);
-    const deliveryFeeCents = Math.round((order.pricing.deliveryFee || 0) * 100);
-    const serviceFeeCents = Math.round((order.pricing.serviceFee || 0) * 100);
-    const taxCents = Math.round((order.pricing.tax || 0) * 100);
-    const discountCents = Math.round((order.pricing.discount || 0) * 100);
+    const subtotal = order.pricing.subtotal || 0;
+    const deliveryFee = order.pricing.deliveryFee || 0;
+    const tax = order.pricing.tax || 0;
     
-    // Calculate total in cents (integer math - no rounding errors)
-    const totalCents = subtotalCents + deliveryFeeCents + serviceFeeCents + taxCents - discountCents;
+    // Calculate total: Subtotal + Delivery Fee + Tax ONLY
+    const total = subtotal + deliveryFee + tax;
     
     const result = {
-      subtotal: subtotalCents / 100,
-      deliveryFee: deliveryFeeCents / 100,
-      serviceFee: serviceFeeCents / 100,
-      tax: taxCents / 100,
-      discount: discountCents / 100,
-      total: totalCents / 100
+      subtotal: parseFloat(subtotal.toFixed(2)),
+      deliveryFee: parseFloat(deliveryFee.toFixed(2)),
+      tax: parseFloat(tax.toFixed(2)),
+      total: parseFloat(total.toFixed(2))
     };
     
-    console.log('[CALC] Stored pricing values:', result);
-    
-    // ⚠️ VALIDATION: Check if recalculating would give different result
-    if (order.items && Array.isArray(order.items)) {
-      let recalculatedSubtotal = 0;
-      order.items.forEach(item => {
-        const itemPrice = item.price || 0;
-        const itemQuantity = item.quantity || 1;
-        recalculatedSubtotal += (itemPrice * itemQuantity);
-      });
-      
-      const storedSubtotal = order.pricing.subtotal || 0;
-      const difference = Math.abs(recalculatedSubtotal - storedSubtotal);
-      
-      if (difference > 0.01) {
-        console.warn(`⚠️ [CALC WARNING] Subtotal discrepancy detected!`);
-        console.warn(`   Stored subtotal: R${storedSubtotal.toFixed(2)}`);
-        console.warn(`   Recalculated:    R${recalculatedSubtotal.toFixed(2)}`);
-        console.warn(`   Difference:      R${difference.toFixed(2)}`);
-        console.warn(`   This is why we use STORED pricing!`);
-      }
-    }
-    
+    console.log('[CALC] Pricing:', result);
     return result;
   }
   
-  // ⚠️ FALLBACK: Only if no pricing stored (shouldn't happen for paid orders)
-  console.warn('[CALC] ⚠️ No stored pricing found - calculating from items (this may be inaccurate)');
+  // ⚠️ FALLBACK: Calculate from order fields if no pricing object
+  console.warn('[CALC] ⚠️ No stored pricing found - using fallback');
   
-  let calculatedSubtotal = 0;
-  if (order.items && Array.isArray(order.items)) {
-    calculatedSubtotal = order.items.reduce((sum, item) => {
-      const itemPrice = item.price || 0;
-      const itemQuantity = item.quantity || 1;
-      return sum + (itemPrice * itemQuantity);
-    }, 0);
-  }
-  
-  // Use integer arithmetic for fees too
-  const deliveryFeeCents = Math.round((order.deliveryFee || 0) * 100);
-  const serviceFeeCents = Math.round((order.serviceFee || 0) * 100);
-  const taxCents = Math.round((order.tax || 0) * 100);
-  const discountCents = Math.round((order.discount || 0) * 100);
-  const subtotalCents = Math.round(calculatedSubtotal * 100);
-  
-  const totalCents = subtotalCents + deliveryFeeCents + serviceFeeCents + taxCents - discountCents;
+  const subtotal = order.subtotal || 0;
+  const deliveryFee = order.deliveryFee || 0;
+  const tax = order.tax || 0;
+  const total = subtotal + deliveryFee + tax;
   
   const result = {
-    subtotal: subtotalCents / 100,
-    deliveryFee: deliveryFeeCents / 100,
-    serviceFee: serviceFeeCents / 100,
-    tax: taxCents / 100,
-    discount: discountCents / 100,
-    total: totalCents / 100
+    subtotal: parseFloat(subtotal.toFixed(2)),
+    deliveryFee: parseFloat(deliveryFee.toFixed(2)),
+    tax: parseFloat(tax.toFixed(2)),
+    total: parseFloat(total.toFixed(2))
   };
   
   console.log('[CALC] Fallback calculation:', result);
-  
   return result;
 };
 
@@ -212,7 +166,7 @@ router.put('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => 
   }
 });
 
-// ===== VENDOR ORDERS - WITH CORRECT CALCULATIONS =====
+// ===== VENDOR ORDERS - SIMPLIFIED PRICING =====
 router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const vendorId = req.user._id;
@@ -247,18 +201,16 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
 
     console.log('📦 Orders found:', orders.length);
     
-    // ✅ Transform orders with STORED pricing (prevents discrepancies)
+    // ✅ Transform orders - ONLY Subtotal + Delivery Fee + Tax
     const transformedOrders = orders.map(order => {
       const calculations = calculateOrderTotals(order);
       
       const transformed = {
         ...order,
-        // ✅ Use calculated values (which are based on STORED pricing)
+        // ✅ Only these 4 pricing fields
         subtotal: calculations.subtotal,
         deliveryFee: calculations.deliveryFee,
-        serviceFee: calculations.serviceFee,
         tax: calculations.tax,
-        discount: calculations.discount,
         total: calculations.total,
         // Customer info
         customerName: order.user?.name || 'Unknown',
@@ -280,12 +232,13 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
     });
 
     if (transformedOrders.length > 0) {
-      console.log('✅ First order transformed:');
+      console.log('✅ First order pricing:');
       console.log('   ID:', transformedOrders[0]._id);
       console.log('   Status:', transformedOrders[0].status);
       console.log('   Subtotal:', transformedOrders[0].subtotal);
+      console.log('   Delivery Fee:', transformedOrders[0].deliveryFee);
+      console.log('   Tax:', transformedOrders[0].tax);
       console.log('   Total:', transformedOrders[0].total);
-      console.log('   Has stored pricing:', !!transformedOrders[0].pricing);
     }
     console.log('==========================================\n');
 
@@ -333,9 +286,7 @@ router.get('/orders/:orderId', authMiddleware, vendorMiddleware, async (req, res
       ...order,
       subtotal: calculations.subtotal,
       deliveryFee: calculations.deliveryFee,
-      serviceFee: calculations.serviceFee,
       tax: calculations.tax,
-      discount: calculations.discount,
       total: calculations.total,
       customerName: order.user?.name || 'Unknown',
       customerPhone: order.user?.phone || 'N/A',
@@ -417,9 +368,7 @@ router.put('/orders/:orderId/status', authMiddleware, vendorMiddleware, async (r
       ...updatedOrder,
       subtotal: calculations.subtotal,
       deliveryFee: calculations.deliveryFee,
-      serviceFee: calculations.serviceFee,
       tax: calculations.tax,
-      discount: calculations.discount,
       total: calculations.total,
       customerName: updatedOrder.user?.name || 'Unknown',
       customerPhone: updatedOrder.user?.phone || 'N/A',
@@ -503,9 +452,7 @@ router.patch('/orders/:orderId/status', authMiddleware, vendorMiddleware, async 
       ...updatedOrder,
       subtotal: calculations.subtotal,
       deliveryFee: calculations.deliveryFee,
-      serviceFee: calculations.serviceFee,
       tax: calculations.tax,
-      discount: calculations.discount,
       total: calculations.total,
       customerName: updatedOrder.user?.name || 'Unknown',
       customerPhone: updatedOrder.user?.phone || 'N/A',
@@ -606,7 +553,82 @@ router.post('/menu', authMiddleware, vendorMiddleware, (req, res, next) => {
   }
 });
 
-// ===== VENDOR STATS - WITH CORRECT REVENUE CALCULATION =====
+router.put('/menu/:id', authMiddleware, vendorMiddleware, (req, res, next) => {
+  const contentType = req.get('Content-Type') || '';
+  if (contentType.includes('multipart/form-data')) {
+    upload.single('image')(req, res, next);
+  } else {
+    next();
+  }
+}, async (req, res) => {
+  try {
+    const restaurant = await Restaurant.findOne({ owner: req.user._id });
+    if (!restaurant) {
+      if (req.file?.filename) await deleteFile(req.file.filename);
+      return res.status(404).json({ success: false, message: 'Restaurant not found' });
+    }
+
+    const menuItem = await MenuItem.findOne({ _id: req.params.id, restaurant: restaurant._id });
+    if (!menuItem) {
+      if (req.file?.filename) await deleteFile(req.file.filename);
+      return res.status(404).json({ success: false, message: 'Menu item not found' });
+    }
+
+    // Update fields
+    if (req.body.name) menuItem.name = req.body.name.trim();
+    if (req.body.description !== undefined) menuItem.description = req.body.description.trim();
+    if (req.body.price) {
+      const parsedPrice = parseFloat(req.body.price);
+      if (isNaN(parsedPrice) || parsedPrice <= 0) {
+        if (req.file?.filename) await deleteFile(req.file.filename);
+        return res.status(400).json({ success: false, message: 'Price must be positive number' });
+      }
+      menuItem.price = parsedPrice;
+    }
+    if (req.body.category) menuItem.category = req.body.category.trim();
+    if (req.body.isAvailable !== undefined) menuItem.isAvailable = req.body.isAvailable === true || req.body.isAvailable === 'true';
+    if (req.body.isVegetarian !== undefined) menuItem.isVegetarian = req.body.isVegetarian === true || req.body.isVegetarian === 'true';
+    if (req.body.isVegan !== undefined) menuItem.isVegan = req.body.isVegan === true || req.body.isVegan === 'true';
+    if (req.body.isGlutenFree !== undefined) menuItem.isGlutenFree = req.body.isGlutenFree === true || req.body.isGlutenFree === 'true';
+    if (req.body.spiceLevel) menuItem.spiceLevel = req.body.spiceLevel;
+    if (req.body.preparationTime) menuItem.preparationTime = parseInt(req.body.preparationTime);
+
+    // Handle image update
+    if (req.file) {
+      if (menuItem.imagePublicId) await deleteFile(menuItem.imagePublicId);
+      menuItem.image = req.file.path;
+      menuItem.imagePublicId = req.file.filename;
+    }
+
+    await menuItem.save();
+    res.json({ success: true, message: 'Menu item updated', menuItem });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to update menu item', error: error.message });
+  }
+});
+
+router.delete('/menu/:id', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    const restaurant = await Restaurant.findOne({ owner: req.user._id });
+    if (!restaurant) {
+      return res.status(404).json({ success: false, message: 'Restaurant not found' });
+    }
+
+    const menuItem = await MenuItem.findOne({ _id: req.params.id, restaurant: restaurant._id });
+    if (!menuItem) {
+      return res.status(404).json({ success: false, message: 'Menu item not found' });
+    }
+
+    if (menuItem.imagePublicId) await deleteFile(menuItem.imagePublicId);
+    await menuItem.deleteOne();
+
+    res.json({ success: true, message: 'Menu item deleted' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to delete menu item', error: error.message });
+  }
+});
+
+// ===== VENDOR STATS - SIMPLIFIED REVENUE CALCULATION =====
 router.get('/stats', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
     const restaurant = await Restaurant.findOne({ owner: req.user._id });
@@ -639,7 +661,7 @@ router.get('/stats', authMiddleware, vendorMiddleware, async (req, res) => {
       status: 'delivered' 
     }).lean();
 
-    // ✅ Use stored pricing for revenue calculation
+    // ✅ Use simplified pricing for revenue
     const revenue = completedOrdersList.reduce((sum, order) => {
       const orderCalc = calculateOrderTotals(order);
       return sum + orderCalc.total;
@@ -659,7 +681,7 @@ router.get('/stats', authMiddleware, vendorMiddleware, async (req, res) => {
       'timestamps.deliveredAt': { $gte: todayStart }
     }).lean();
 
-    // ✅ Use stored pricing for today's revenue
+    // ✅ Use simplified pricing for today's revenue
     const todayRevenue = todayOrdersList.reduce((sum, order) => {
       const orderCalc = calculateOrderTotals(order);
       return sum + orderCalc.total;
