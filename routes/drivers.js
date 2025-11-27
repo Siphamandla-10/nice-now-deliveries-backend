@@ -147,13 +147,63 @@ router.get('/active-deliveries', auth, isDriver, async (req, res) => {
     res.json({ 
       success: true, 
       count: transformedOrders.length, 
-      deliveries: transformedOrders  // Changed from 'orders' to 'deliveries'
+      activeDeliveries: transformedOrders,
+      deliveries: transformedOrders
     });
   } catch (error) {
     console.error('❌ Error fetching active deliveries:', error);
     res.status(500).json({ 
       success: false,
-      error: 'Failed to fetch active deliveries' 
+      error: 'Failed to fetch active deliveries',
+      activeDeliveries: [],
+      deliveries: []
+    });
+  }
+});
+
+// ==========================================
+// GET ALL DELIVERIES FOR DRIVER (HISTORY)
+// ⭐ THIS IS THE NEW ROUTE THAT FIXES THE ERROR
+// ==========================================
+router.get('/deliveries', auth, isDriver, async (req, res) => {
+  try {
+    console.log('\n========== 📦 GET ALL DELIVERIES ==========');
+    console.log('Driver ID:', req.user.id);
+    
+    const deliveries = await Order.find({
+      driver: req.user.id
+    })
+      .populate('restaurant', 'name address contact image')
+      .populate('user', 'name phone')
+      .lean()
+      .sort({ createdAt: -1 })
+      .limit(100);
+
+    console.log('📦 Total deliveries found:', deliveries.length);
+
+    const transformedDeliveries = deliveries.map(order => ({
+      ...order,
+      total: order.pricing?.total || order.total || 0,
+      subtotal: order.pricing?.subtotal || order.subtotal || 0,
+      deliveryFee: order.pricing?.deliveryFee || order.deliveryFee || 0,
+      serviceFee: order.pricing?.serviceFee || order.serviceFee || 0,
+      driverEarnings: order.driverEarnings || order.pricing?.driverPayout || 0
+    }));
+
+    console.log('=========================================\n');
+
+    res.json({ 
+      success: true, 
+      count: transformedDeliveries.length, 
+      deliveries: transformedDeliveries
+    });
+  } catch (error) {
+    console.error('❌ Error fetching deliveries:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch deliveries',
+      details: error.message,
+      deliveries: []
     });
   }
 });
@@ -204,7 +254,7 @@ router.get('/completed-deliveries', auth, isDriver, async (req, res) => {
 });
 
 // ==========================================
-// ACCEPT ORDER (ASSIGN DRIVER) - UPDATED ROUTE
+// ACCEPT ORDER (ASSIGN DRIVER)
 // ==========================================
 router.post('/deliveries/:orderId/accept', auth, isDriver, async (req, res) => {
   try {
@@ -241,12 +291,10 @@ router.post('/deliveries/:orderId/accept', auth, isDriver, async (req, res) => {
       });
     }
     
-    // Update order with driver assignment
     order.driver = req.user.id;
     order.status = 'driver_assigned';
     order.driverStatus = 'accepted';
     
-    // Update timestamps
     if (!order.timestamps) {
       order.timestamps = {};
     }
@@ -254,7 +302,6 @@ router.post('/deliveries/:orderId/accept', auth, isDriver, async (req, res) => {
     
     await order.save();
     
-    // Fetch updated order with populated fields
     const updatedOrder = await Order.findById(orderId)
       .populate('restaurant', 'name address contact')
       .populate('user', 'name phone')
@@ -279,7 +326,7 @@ router.post('/deliveries/:orderId/accept', auth, isDriver, async (req, res) => {
       success: true, 
       message: 'Order accepted successfully', 
       order: transformedOrder,
-      delivery: transformedOrder  // Also return as 'delivery' for compatibility
+      delivery: transformedOrder
     });
   } catch (error) {
     console.error('❌ Error accepting order:', error);
@@ -292,7 +339,7 @@ router.post('/deliveries/:orderId/accept', auth, isDriver, async (req, res) => {
 });
 
 // ==========================================
-// DECLINE ORDER - NEW ROUTE
+// DECLINE ORDER
 // ==========================================
 router.post('/deliveries/:orderId/decline', auth, isDriver, async (req, res) => {
   try {
@@ -366,7 +413,6 @@ router.patch('/deliveries/:orderId/status', auth, isDriver, async (req, res) => 
     
     order.status = status;
     
-    // Update timestamps
     if (!order.timestamps) {
       order.timestamps = {};
     }
@@ -433,17 +479,51 @@ router.get('/', auth, isAdmin, async (req, res) => {
 // ==========================================
 router.get('/profile', auth, isDriver, async (req, res) => {
   try {
+    console.log('\n========== 👤 GET DRIVER PROFILE ==========');
+    console.log('Driver ID:', req.user.id);
+    
     const driver = await Driver.findOne({ user: req.user.id })
-      .populate('user', 'name email phone');
+      .populate('user', 'name email phone profileImage avatar')
+      .lean();
     
     if (!driver) {
-      return res.status(404).json({ error: 'Driver profile not found' });
+      console.log('❌ Driver profile not found');
+      return res.status(404).json({ 
+        success: false,
+        error: 'Driver profile not found' 
+      });
     }
     
-    res.json({ success: true, driver });
+    const driverProfile = {
+      ...driver,
+      name: driver.user?.name,
+      email: driver.user?.email,
+      phone: driver.user?.phone,
+      profileImage: driver.user?.profileImage || driver.user?.avatar,
+      user: driver.user,
+      totalDeliveries: driver.totalDeliveries || 0,
+      rating: driver.rating || 0,
+      totalEarnings: driver.totalEarnings || 0,
+      isAvailable: driver.isAvailable || false,
+      vehicleType: driver.vehicleType || '',
+      vehicleNumber: driver.vehicleNumber || '',
+      licenseNumber: driver.licenseNumber || ''
+    };
+    
+    console.log('✅ Driver profile loaded');
+    console.log('=========================================\n');
+    
+    res.json({ 
+      success: true, 
+      driver: driverProfile 
+    });
   } catch (error) {
-    console.error('Error fetching driver profile:', error);
-    res.status(500).json({ error: 'Failed to fetch driver profile' });
+    console.error('❌ Error fetching driver profile:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch driver profile',
+      details: error.message 
+    });
   }
 });
 
@@ -452,25 +532,48 @@ router.get('/profile', auth, isDriver, async (req, res) => {
 // ==========================================
 router.put('/profile', auth, isDriver, async (req, res) => {
   try {
+    console.log('\n========== 💾 UPDATE DRIVER PROFILE ==========');
+    console.log('Driver ID:', req.user.id);
+    console.log('Update data:', req.body);
+    
     const { vehicleType, vehicleNumber, licenseNumber, isAvailable } = req.body;
     
     const driver = await Driver.findOne({ user: req.user.id });
     
     if (!driver) {
-      return res.status(404).json({ error: 'Driver profile not found' });
+      console.log('❌ Driver profile not found');
+      return res.status(404).json({ 
+        success: false,
+        error: 'Driver profile not found' 
+      });
     }
     
-    if (vehicleType) driver.vehicleType = vehicleType;
-    if (vehicleNumber) driver.vehicleNumber = vehicleNumber;
-    if (licenseNumber) driver.licenseNumber = licenseNumber;
+    if (vehicleType !== undefined) driver.vehicleType = vehicleType;
+    if (vehicleNumber !== undefined) driver.vehicleNumber = vehicleNumber;
+    if (licenseNumber !== undefined) driver.licenseNumber = licenseNumber;
     if (typeof isAvailable === 'boolean') driver.isAvailable = isAvailable;
     
     await driver.save();
     
-    res.json({ success: true, message: 'Profile updated', driver });
+    const updatedDriver = await Driver.findOne({ user: req.user.id })
+      .populate('user', 'name email phone profileImage avatar')
+      .lean();
+    
+    console.log('✅ Profile updated successfully');
+    console.log('=========================================\n');
+    
+    res.json({ 
+      success: true, 
+      message: 'Profile updated successfully', 
+      driver: updatedDriver 
+    });
   } catch (error) {
-    console.error('Error updating driver profile:', error);
-    res.status(500).json({ error: 'Failed to update profile' });
+    console.error('❌ Error updating driver profile:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to update profile',
+      details: error.message 
+    });
   }
 });
 
@@ -479,14 +582,24 @@ router.put('/profile', auth, isDriver, async (req, res) => {
 // ==========================================
 router.post('/toggle-availability', auth, isDriver, async (req, res) => {
   try {
+    console.log('\n========== 🔄 TOGGLE DRIVER AVAILABILITY ==========');
+    console.log('Driver ID:', req.user.id);
+    
     const driver = await Driver.findOne({ user: req.user.id });
     
     if (!driver) {
-      return res.status(404).json({ error: 'Driver profile not found' });
+      console.log('❌ Driver profile not found');
+      return res.status(404).json({ 
+        success: false,
+        error: 'Driver profile not found' 
+      });
     }
     
     driver.isAvailable = !driver.isAvailable;
     await driver.save();
+    
+    console.log('✅ Availability toggled to:', driver.isAvailable);
+    console.log('=========================================\n');
     
     res.json({ 
       success: true, 
@@ -494,13 +607,18 @@ router.post('/toggle-availability', auth, isDriver, async (req, res) => {
       isAvailable: driver.isAvailable
     });
   } catch (error) {
-    console.error('Error toggling availability:', error);
-    res.status(500).json({ error: 'Failed to toggle availability' });
+    console.error('❌ Error toggling availability:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to toggle availability',
+      details: error.message 
+    });
   }
 });
 
 // ==========================================
 // GET SPECIFIC ORDER DETAILS (DRIVER)
+// ⚠️ CRITICAL: This MUST be the LAST route
 // ==========================================
 router.get('/:id', auth, isDriver, async (req, res) => {
   try {
@@ -511,11 +629,17 @@ router.get('/:id', auth, isDriver, async (req, res) => {
       .lean();
     
     if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Order not found' 
+      });
     }
     
     if (order.driver && order.driver._id.toString() !== req.user.id) {
-      return res.status(403).json({ error: 'Unauthorized to view this order' });
+      return res.status(403).json({ 
+        success: false,
+        error: 'Unauthorized to view this order' 
+      });
     }
     
     const transformedOrder = {
@@ -529,7 +653,11 @@ router.get('/:id', auth, isDriver, async (req, res) => {
     res.json({ success: true, order: transformedOrder });
   } catch (error) {
     console.error('❌ Error fetching order details:', error);
-    res.status(500).json({ error: 'Failed to fetch order details' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch order details',
+      details: error.message 
+    });
   }
 });
 
