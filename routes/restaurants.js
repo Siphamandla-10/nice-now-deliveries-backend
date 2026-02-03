@@ -1,4 +1,4 @@
-// routes/restaurants.js - COMPLETE FIXED VERSION with all routes
+// routes/restaurants.js - SHOW ALL RESTAURANTS WITH NO LIMITS
 
 const express = require('express');
 const router = express.Router();
@@ -132,11 +132,51 @@ async function findNearbyLocations(restaurantName, userLat, userLng, radiusKm = 
   }
 }
 
-// ==================== SPECIFIC ROUTES FIRST (BEFORE PARAMETERIZED ROUTES) ====================
+// ==================== SPECIFIC ROUTES FIRST ====================
+
+/**
+ * GET /api/restaurants/debug/count
+ * Check exact database count
+ */
+router.get('/debug/count', async (req, res) => {
+  try {
+    const total = await Restaurant.countDocuments({});
+    const active = await Restaurant.countDocuments({ isActive: true });
+    const inactive = await Restaurant.countDocuments({ isActive: false });
+    const open = await Restaurant.countDocuments({ status: 'open' });
+    const closed = await Restaurant.countDocuments({ status: 'closed' });
+    
+    const allRestaurants = await Restaurant.find({})
+      .select('name isActive status address')
+      .sort({ name: 1 })
+      .lean();
+
+    console.log('\n📊 ========== DATABASE RESTAURANT COUNT ==========');
+    console.log(`   Total: ${total}`);
+    console.log(`   Active: ${active}`);
+    console.log(`   Inactive: ${inactive}`);
+    console.log(`   Open: ${open}`);
+    console.log(`   Closed: ${closed}`);
+    console.log('\n📋 ALL RESTAURANTS IN DATABASE:');
+    allRestaurants.forEach((r, i) => {
+      const city = r.address?.city || r.address?.suburb || 'Unknown';
+      console.log(`   ${i + 1}. ${r.name} - ${city} - Active: ${r.isActive}, Status: ${r.status}`);
+    });
+    console.log('================================================\n');
+
+    res.json({
+      success: true,
+      stats: { total, active, inactive, open, closed },
+      restaurants: allRestaurants
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 /**
  * GET /api/restaurants/enrich-all
- * Admin endpoint: Search and update existing restaurants (for setup only)
+ * Admin endpoint: Search and update existing restaurants
  */
 router.get('/enrich-all', authMiddleware, async (req, res) => {
   try {
@@ -217,7 +257,7 @@ router.get('/enrich-all', authMiddleware, async (req, res) => {
 
 /**
  * GET /api/restaurants/:id/menu
- * Get restaurant menu items - MUST BE BEFORE /:id route
+ * Get restaurant menu items
  */
 router.get('/:id/menu', async (req, res) => {
   try {
@@ -225,7 +265,6 @@ router.get('/:id/menu', async (req, res) => {
 
     console.log(`📍 GET /api/restaurants/${id}/menu`);
 
-    // Check if restaurant exists
     const restaurant = await Restaurant.findById(id);
 
     if (!restaurant) {
@@ -235,7 +274,6 @@ router.get('/:id/menu', async (req, res) => {
       });
     }
 
-    // Get menu items for this restaurant
     const menuItems = await MenuItem.find({
       restaurant: id,
       isAvailable: true
@@ -245,7 +283,6 @@ router.get('/:id/menu', async (req, res) => {
 
     console.log(`   ✅ Found ${menuItems.length} menu items`);
 
-    // Group by category
     const menuByCategory = {};
     menuItems.forEach(item => {
       const category = item.category || 'Other';
@@ -297,8 +334,7 @@ router.get('/:name/locations', async (req, res) => {
     const radiusKm = parseFloat(radius);
 
     const restaurant = await Restaurant.findOne({ 
-      name: new RegExp(`^${name}$`, 'i'),
-      isActive: true 
+      name: new RegExp(`^${name}$`, 'i')
     }).lean();
 
     if (!restaurant) {
@@ -363,7 +399,6 @@ router.get('/:id', async (req, res) => {
       });
     }
 
-    // Format restaurant data
     const formattedRestaurant = {
       ...restaurant,
       displayName: restaurant.name,
@@ -372,7 +407,7 @@ router.get('/:id', async (req, res) => {
              restaurant.coverImage ||
              restaurant.image ||
              `https://ui-avatars.com/api/?name=${encodeURIComponent(restaurant.name)}&size=400&background=C444C7&color=fff&bold=true`,
-      available: restaurant.isActive && restaurant.status === 'active'
+      available: restaurant.isActive && restaurant.status === 'open'
     };
 
     console.log(`   ✅ Found restaurant: ${restaurant.name}`);
@@ -392,11 +427,11 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// ==================== MAIN ROUTES ====================
+// ==================== MAIN ROUTE - GET ALL RESTAURANTS ====================
 
 /**
  * GET /api/restaurants
- * Main endpoint - Shows all restaurants with real nearby locations (Uber Eats style)
+ * Main endpoint - Shows ALL restaurants (NO LIMITS!)
  */
 router.get('/', async (req, res) => {
   try {
@@ -407,26 +442,34 @@ router.get('/', async (req, res) => {
       city, 
       cuisine,
       search,
-      limit = 50,
-      expandLocations = 'false'
+      expandLocations = 'false',
+      isActive  // Optional filter
     } = req.query;
 
-    console.log('📍 GET /api/restaurants:', { lat, lng, radius, expandLocations });
+    console.log('\n📍 ========== GET ALL RESTAURANTS ==========');
+    console.log('Query params:', { lat, lng, radius, expandLocations, isActive, city, cuisine, search });
 
-    // Build query for database restaurants
-    const query = { isActive: true };
+    // 🔥 BUILD QUERY - NO DEFAULT FILTER
+    const query = {};
+
+    // Optional filters (only if explicitly provided)
+    if (isActive !== undefined) {
+      query.isActive = isActive === 'true';
+      console.log(`   🔍 Filtering by isActive: ${query.isActive}`);
+    }
 
     if (city) query['address.city'] = new RegExp(city, 'i');
     if (cuisine) query.cuisine = new RegExp(cuisine, 'i');
     if (search) query.name = new RegExp(search, 'i');
 
-    // Get base restaurants from database
+    // 🔥 GET ALL RESTAURANTS - NO LIMIT!
     const dbRestaurants = await Restaurant.find(query)
-      .select('name cuisine images rating deliveryFee estimatedDeliveryTime minimumOrder isChain location address')
-      .limit(parseInt(limit))
+      .select('name cuisine images rating deliveryFee estimatedDeliveryTime minimumOrder isChain location address isActive status')
+      .sort({ name: 1 })  // Sort alphabetically
       .lean();
 
-    console.log(`📊 Found ${dbRestaurants.length} restaurants in database`);
+    console.log(`✅ Found ${dbRestaurants.length} restaurants in database`);
+    console.log('================================================\n');
 
     // ===== MODE 1: No location provided - Return ALL database restaurants =====
     if (!lat || !lng) {
@@ -440,7 +483,7 @@ router.get('/', async (req, res) => {
                restaurant.coverImage ||
                restaurant.image ||
                `https://ui-avatars.com/api/?name=${encodeURIComponent(restaurant.name)}&size=400&background=C444C7&color=fff&bold=true`,
-        available: true
+        available: restaurant.isActive && restaurant.status === 'open'
       }));
 
       return res.json({
@@ -484,7 +527,7 @@ router.get('/', async (req, res) => {
                  restaurant.coverImage ||
                  restaurant.image ||
                  `https://ui-avatars.com/api/?name=${encodeURIComponent(restaurant.name)}&size=400&background=C444C7&color=fff&bold=true`,
-          available: true
+          available: restaurant.isActive && restaurant.status === 'open'
         };
       });
 
@@ -549,7 +592,9 @@ router.get('/', async (req, res) => {
             minimumOrder: restaurant.minimumOrder || 0,
             cuisine: location.cuisine || restaurant.cuisine || 'Various',
             source: 'openstreetmap',
-            available: true
+            available: true,
+            isActive: restaurant.isActive,
+            status: restaurant.status
           });
         });
       } else {

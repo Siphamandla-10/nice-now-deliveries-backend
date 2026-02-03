@@ -1,4 +1,4 @@
-﻿// routes/vendors.js - COMPLETE CORRECTED VERSION WITH SIMPLIFIED PRICING
+﻿// routes/vendors.js - COMPLETE VERSION WITH ONLINE/OFFLINE TOGGLE
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
@@ -45,25 +45,15 @@ const deleteFile = async (publicId) => {
 };
 
 // ===== HELPER: CALCULATE ORDER TOTALS - SIMPLIFIED VERSION =====
-/**
- * ✅ SIMPLIFIED: Only calculates Subtotal + Delivery Fee + Tax (15%)
- * 
- * Formula: Total = Subtotal + Delivery Fee + Tax
- * 
- * WHY: Always use stored pricing to prevent discrepancies when menu prices change
- */
 const calculateOrderTotals = (order) => {
   console.log(`\n[CALC] Processing order ${order._id || order.id}`);
   
-  // ✅ ALWAYS prioritize stored pricing (from payment time)
   if (order.pricing && typeof order.pricing === 'object') {
     console.log('[CALC] Using stored pricing from database');
     
     const subtotal = order.pricing.subtotal || 0;
     const deliveryFee = order.pricing.deliveryFee || 0;
     const tax = order.pricing.tax || 0;
-    
-    // Calculate total: Subtotal + Delivery Fee + Tax ONLY
     const total = subtotal + deliveryFee + tax;
     
     const result = {
@@ -77,7 +67,6 @@ const calculateOrderTotals = (order) => {
     return result;
   }
   
-  // ⚠️ FALLBACK: Calculate from order fields if no pricing object
   console.warn('[CALC] ⚠️ No stored pricing found - using fallback');
   
   const subtotal = order.subtotal || 0;
@@ -166,6 +155,250 @@ router.put('/restaurant', authMiddleware, vendorMiddleware, async (req, res) => 
   }
 });
 
+// ==================== RESTAURANT ONLINE/OFFLINE TOGGLE ====================
+
+/**
+ * PUT /api/vendors/restaurant/toggle-online
+ * Toggle restaurant between online (active) and offline (inactive)
+ */
+router.put('/restaurant/toggle-online', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    const vendorId = req.user._id;
+    console.log('\n========== TOGGLE RESTAURANT STATUS ==========');
+    console.log('Vendor ID:', vendorId);
+
+    const restaurant = await Restaurant.findOne({ owner: vendorId });
+    
+    if (!restaurant) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Restaurant not found. Please create your restaurant first.' 
+      });
+    }
+
+    // Check if restaurant has menu items before allowing to go online
+    if (!restaurant.isActive) {
+      const menuItemCount = await MenuItem.countDocuments({ 
+        restaurant: restaurant._id,
+        isAvailable: true 
+      });
+
+      if (menuItemCount === 0) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Please add at least one available menu item before going online',
+          menuItemCount: 0
+        });
+      }
+    }
+
+    // Toggle the status
+    const newActiveStatus = !restaurant.isActive;
+    const newStatus = newActiveStatus ? 'active' : 'inactive';
+
+    restaurant.isActive = newActiveStatus;
+    restaurant.status = newStatus;
+    restaurant.lastVerified = new Date();
+
+    await restaurant.save();
+
+    console.log(`✅ Restaurant ${restaurant.name} is now ${newActiveStatus ? 'ONLINE' : 'OFFLINE'}`);
+    console.log('==========================================\n');
+
+    res.json({
+      success: true,
+      message: `Restaurant is now ${newActiveStatus ? 'online' : 'offline'}`,
+      restaurant: {
+        _id: restaurant._id,
+        name: restaurant.name,
+        isActive: restaurant.isActive,
+        status: restaurant.status,
+        lastVerified: restaurant.lastVerified
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error toggling restaurant status:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update restaurant status', 
+      error: error.message 
+    });
+  }
+});
+
+/**
+ * PUT /api/vendors/restaurant/set-online
+ * Explicitly set restaurant to ONLINE
+ */
+router.put('/restaurant/set-online', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    const vendorId = req.user._id;
+    console.log('\n========== SET RESTAURANT ONLINE ==========');
+    console.log('Vendor ID:', vendorId);
+    
+    const restaurant = await Restaurant.findOne({ owner: vendorId });
+    
+    if (!restaurant) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Restaurant not found. Please create your restaurant first.' 
+      });
+    }
+
+    // Validation: Check if restaurant has minimum requirements
+    if (!restaurant.name || restaurant.name === '') {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Please set restaurant name before going online' 
+      });
+    }
+
+    // Check if restaurant has menu items
+    const menuItemCount = await MenuItem.countDocuments({ 
+      restaurant: restaurant._id,
+      isAvailable: true 
+    });
+
+    if (menuItemCount === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Please add at least one available menu item before going online',
+        menuItemCount: 0
+      });
+    }
+
+    restaurant.isActive = true;
+    restaurant.status = 'active';
+    restaurant.lastVerified = new Date();
+
+    await restaurant.save();
+
+    console.log(`✅ Restaurant ${restaurant.name} is now ONLINE with ${menuItemCount} menu items`);
+    console.log('==========================================\n');
+
+    res.json({
+      success: true,
+      message: 'Restaurant is now online and accepting orders',
+      restaurant: {
+        _id: restaurant._id,
+        name: restaurant.name,
+        isActive: restaurant.isActive,
+        status: restaurant.status,
+        menuItemCount: menuItemCount,
+        lastVerified: restaurant.lastVerified
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error setting restaurant online:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to set restaurant online', 
+      error: error.message 
+    });
+  }
+});
+
+/**
+ * PUT /api/vendors/restaurant/set-offline
+ * Explicitly set restaurant to OFFLINE
+ */
+router.put('/restaurant/set-offline', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    const vendorId = req.user._id;
+    const { reason } = req.body;
+    
+    console.log('\n========== SET RESTAURANT OFFLINE ==========');
+    console.log('Vendor ID:', vendorId);
+    if (reason) console.log('Reason:', reason);
+    
+    const restaurant = await Restaurant.findOne({ owner: vendorId });
+    
+    if (!restaurant) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Restaurant not found' 
+      });
+    }
+
+    restaurant.isActive = false;
+    restaurant.status = 'inactive';
+    restaurant.lastVerified = new Date();
+
+    await restaurant.save();
+
+    console.log(`✅ Restaurant ${restaurant.name} is now OFFLINE`);
+    console.log('==========================================\n');
+
+    res.json({
+      success: true,
+      message: 'Restaurant is now offline',
+      restaurant: {
+        _id: restaurant._id,
+        name: restaurant.name,
+        isActive: restaurant.isActive,
+        status: restaurant.status,
+        lastVerified: restaurant.lastVerified
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error setting restaurant offline:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to set restaurant offline', 
+      error: error.message 
+    });
+  }
+});
+
+/**
+ * GET /api/vendors/restaurant/status
+ * Get current restaurant online/offline status
+ */
+router.get('/restaurant/status', authMiddleware, vendorMiddleware, async (req, res) => {
+  try {
+    const vendorId = req.user._id;
+    
+    const restaurant = await Restaurant.findOne({ owner: vendorId })
+      .select('name isActive status lastVerified');
+    
+    if (!restaurant) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Restaurant not found' 
+      });
+    }
+
+    // Get menu item count
+    const menuItemCount = await MenuItem.countDocuments({ 
+      restaurant: restaurant._id,
+      isAvailable: true 
+    });
+
+    res.json({
+      success: true,
+      restaurant: {
+        _id: restaurant._id,
+        name: restaurant.name,
+        isActive: restaurant.isActive,
+        status: restaurant.status,
+        lastVerified: restaurant.lastVerified,
+        menuItemCount: menuItemCount
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Error getting restaurant status:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to get restaurant status', 
+      error: error.message 
+    });
+  }
+});
+
 // ===== VENDOR ORDERS - SIMPLIFIED PRICING =====
 router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
   try {
@@ -201,28 +434,23 @@ router.get('/orders', authMiddleware, vendorMiddleware, async (req, res) => {
 
     console.log('📦 Orders found:', orders.length);
     
-    // ✅ Transform orders - ONLY Subtotal + Delivery Fee + Tax
     const transformedOrders = orders.map(order => {
       const calculations = calculateOrderTotals(order);
       
       const transformed = {
         ...order,
-        // ✅ Only these 4 pricing fields
         subtotal: calculations.subtotal,
         deliveryFee: calculations.deliveryFee,
         tax: calculations.tax,
         total: calculations.total,
-        // Customer info
         customerName: order.user?.name || 'Unknown',
         customerPhone: order.user?.phone || 'N/A',
         customerEmail: order.user?.email || 'N/A',
-        // Driver info
         driverName: order.driver?.name || null,
         driverPhone: order.driver?.phone || null,
         driverVehicle: order.driver?.vehicleType || null,
         driverVehicleNumber: order.driver?.vehicleNumber || null,
         hasDriver: !!order.driver,
-        // Keep original objects
         pricing: order.pricing,
         driver: order.driver,
         user: order.user
@@ -574,7 +802,6 @@ router.put('/menu/:id', authMiddleware, vendorMiddleware, (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Menu item not found' });
     }
 
-    // Update fields
     if (req.body.name) menuItem.name = req.body.name.trim();
     if (req.body.description !== undefined) menuItem.description = req.body.description.trim();
     if (req.body.price) {
@@ -593,7 +820,6 @@ router.put('/menu/:id', authMiddleware, vendorMiddleware, (req, res, next) => {
     if (req.body.spiceLevel) menuItem.spiceLevel = req.body.spiceLevel;
     if (req.body.preparationTime) menuItem.preparationTime = parseInt(req.body.preparationTime);
 
-    // Handle image update
     if (req.file) {
       if (menuItem.imagePublicId) await deleteFile(menuItem.imagePublicId);
       menuItem.image = req.file.path;
@@ -661,7 +887,6 @@ router.get('/stats', authMiddleware, vendorMiddleware, async (req, res) => {
       status: 'delivered' 
     }).lean();
 
-    // ✅ Use simplified pricing for revenue
     const revenue = completedOrdersList.reduce((sum, order) => {
       const orderCalc = calculateOrderTotals(order);
       return sum + orderCalc.total;
@@ -681,7 +906,6 @@ router.get('/stats', authMiddleware, vendorMiddleware, async (req, res) => {
       'timestamps.deliveredAt': { $gte: todayStart }
     }).lean();
 
-    // ✅ Use simplified pricing for today's revenue
     const todayRevenue = todayOrdersList.reduce((sum, order) => {
       const orderCalc = calculateOrderTotals(order);
       return sum + orderCalc.total;

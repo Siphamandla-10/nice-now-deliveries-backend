@@ -1,4 +1,4 @@
-// models/User.js - COMPLETE FIXED VERSION with proper GeoJSON
+// models/User.js - COMPLETE VERSION with Stripe Integration + GeoJSON
 
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
@@ -40,8 +40,40 @@ const userSchema = new mongoose.Schema({
     required: true
   },
 
-  // FIXED: Proper GeoJSON location format
-  // MongoDB requires coordinates as [longitude, latitude] array, NOT an object
+  // ============================================
+  // STRIPE INTEGRATION
+  // ============================================
+  stripeCustomerId: {
+    type: String,
+    unique: true,
+    sparse: true  // Allows null values while maintaining uniqueness
+  },
+
+  // Saved payment methods (references only, actual data in Stripe)
+  savedPaymentMethods: [{
+    stripePaymentMethodId: String,
+    type: {
+      type: String,
+      enum: ['card', 'bank_transfer', 'digital_wallet']
+    },
+    last4: String,
+    brand: String,
+    expMonth: Number,
+    expYear: Number,
+    isDefault: {
+      type: Boolean,
+      default: false
+    },
+    addedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+
+  // ============================================
+  // GEOSPATIAL LOCATION (Proper GeoJSON)
+  // ============================================
+  // MongoDB requires coordinates as [longitude, latitude] array
   location: {
     type: {
       type: String,
@@ -49,11 +81,10 @@ const userSchema = new mongoose.Schema({
       default: 'Point'
     },
     coordinates: {
-      type: [Number],  // CORRECT: Array format [lng, lat]
-      default: [0, 0],  // CORRECT: Default valid coordinates
+      type: [Number],  // Array format [lng, lat]
+      default: [0, 0],
       validate: {
         validator: function(coords) {
-          // Ensure we have exactly 2 coordinates
           return Array.isArray(coords) && coords.length === 2;
         },
         message: 'Coordinates must be an array of [longitude, latitude]'
@@ -61,7 +92,7 @@ const userSchema = new mongoose.Schema({
     }
   },
 
-  // Alternative helper fields for easier access (not indexed for geo queries)
+  // Alternative helper fields for easier access
   latitude: {
     type: Number,
     default: null
@@ -135,7 +166,9 @@ const userSchema = new mongoose.Schema({
     }
   }],
 
-  // Verification
+  // ============================================
+  // VERIFICATION & STATUS
+  // ============================================
   isVerified: {
     type: Boolean,
     default: false
@@ -216,20 +249,28 @@ const userSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// CRITICAL: Index for geospatial queries
-// MongoDB 2dsphere index requires coordinates in [lng, lat] array format
-userSchema.index({ location: '2dsphere' });
+// ============================================
+// INDEXES
+// ============================================
+userSchema.index({ location: '2dsphere' }); // Geospatial queries
 userSchema.index({ email: 1 });
 userSchema.index({ phone: 1 });
 userSchema.index({ userType: 1 });
 userSchema.index({ city: 1, isActive: 1 });
+userSchema.index({ stripeCustomerId: 1 }); // Stripe queries
 
-// Virtual for full name
+// ============================================
+// VIRTUALS
+// ============================================
 userSchema.virtual('fullName').get(function() {
   return this.name;
 });
 
-// PRE-SAVE MIDDLEWARE: Hash password if modified
+// ============================================
+// PRE-SAVE MIDDLEWARE
+// ============================================
+
+// Hash password if modified
 userSchema.pre('save', async function(next) {
   if (!this.isModified('password')) {
     return next();
@@ -244,7 +285,7 @@ userSchema.pre('save', async function(next) {
   }
 });
 
-// PRE-SAVE MIDDLEWARE: Sync location formats
+// Sync location formats
 userSchema.pre('save', function(next) {
   // If latitude/longitude helper fields are set, sync to GeoJSON coordinates
   if (this.latitude != null && this.longitude != null) {
@@ -262,12 +303,16 @@ userSchema.pre('save', function(next) {
   next();
 });
 
-// METHOD: Compare password
+// ============================================
+// INSTANCE METHODS
+// ============================================
+
+// Compare password
 userSchema.methods.comparePassword = async function(candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-// METHOD: Update location with proper GeoJSON format
+// Update location with proper GeoJSON format
 userSchema.methods.updateLocation = function(latitude, longitude, addressData = {}) {
   // Store in GeoJSON format [longitude, latitude]
   this.location.coordinates = [longitude, latitude];
@@ -290,7 +335,7 @@ userSchema.methods.updateLocation = function(latitude, longitude, addressData = 
   return this.save();
 };
 
-// METHOD: Add delivery address
+// Add delivery address
 userSchema.methods.addAddress = function(addressData) {
   if (addressData.isDefault) {
     this.addresses.forEach(addr => addr.isDefault = false);
@@ -304,12 +349,61 @@ userSchema.methods.addAddress = function(addressData) {
   return this.save();
 };
 
-// METHOD: Get default address
+// Get default address
 userSchema.methods.getDefaultAddress = function() {
   return this.addresses.find(addr => addr.isDefault) || this.addresses[0];
 };
 
-// STATIC: Find users near a location
+// ============================================
+// STRIPE-SPECIFIC METHODS
+// ============================================
+
+// Add payment method
+userSchema.methods.addPaymentMethod = function(paymentMethodData) {
+  // Set as default if it's the first payment method
+  if (this.savedPaymentMethods.length === 0) {
+    paymentMethodData.isDefault = true;
+  }
+  
+  // If new method should be default, unset others
+  if (paymentMethodData.isDefault) {
+    this.savedPaymentMethods.forEach(pm => pm.isDefault = false);
+  }
+  
+  this.savedPaymentMethods.push(paymentMethodData);
+  return this.save();
+};
+
+// Get default payment method
+userSchema.methods.getDefaultPaymentMethod = function() {
+  return this.savedPaymentMethods.find(pm => pm.isDefault) || 
+         this.savedPaymentMethods[0];
+};
+
+// Remove payment method
+userSchema.methods.removePaymentMethod = function(paymentMethodId) {
+  const index = this.savedPaymentMethods.findIndex(
+    pm => pm.stripePaymentMethodId === paymentMethodId
+  );
+  
+  if (index > -1) {
+    const wasDefault = this.savedPaymentMethods[index].isDefault;
+    this.savedPaymentMethods.splice(index, 1);
+    
+    // If removed method was default, set first remaining as default
+    if (wasDefault && this.savedPaymentMethods.length > 0) {
+      this.savedPaymentMethods[0].isDefault = true;
+    }
+  }
+  
+  return this.save();
+};
+
+// ============================================
+// STATIC METHODS
+// ============================================
+
+// Find users near a location
 userSchema.statics.findNearby = function(longitude, latitude, maxDistanceKm = 10) {
   const maxDistanceMeters = maxDistanceKm * 1000;
   
@@ -327,9 +421,27 @@ userSchema.statics.findNearby = function(longitude, latitude, maxDistanceKm = 10
   });
 };
 
-// STATIC: Find by email
+// Find by email
 userSchema.statics.findByEmail = function(email) {
   return this.findOne({ email: email.toLowerCase() });
+};
+
+// Find by Stripe customer ID
+userSchema.statics.findByStripeCustomerId = function(stripeCustomerId) {
+  return this.findOne({ stripeCustomerId });
+};
+
+// ============================================
+// JSON SERIALIZATION
+// ============================================
+
+// Remove sensitive data when converting to JSON
+userSchema.methods.toJSON = function() {
+  const obj = this.toObject();
+  delete obj.password;
+  delete obj.phoneVerification.code;
+  delete obj.accountActivity.failedLoginAttempts;
+  return obj;
 };
 
 module.exports = mongoose.model('User', userSchema);

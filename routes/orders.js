@@ -1,7 +1,168 @@
 const express = require('express');
 const router = express.Router();
 const Order = require('../models/Order');
+const Restaurant = require('../models/Restaurant');
 const { auth } = require('../middleware/auth');
+const NodeGeocoder = require('node-geocoder');
+
+// Initialize geocoder
+const geocoder = NodeGeocoder({
+  provider: 'google',
+  apiKey: 'AIzaSyBmGlXDi7C_3LsGgpKj8GODZS-jNbX57kQ',
+  formatter: null
+});
+
+// Helper function to geocode address
+async function geocodeAddress(address) {
+  try {
+    const addressString = address.street 
+      ? `${address.street}, ${address.city}, ${address.state || ''}, ${address.zipCode || ''}, ${address.country || 'South Africa'}`
+      : '';
+    
+    if (!addressString) {
+      console.log('⚠️ No address to geocode');
+      return { coordinates: [0, 0], latitude: 0, longitude: 0 };
+    }
+    
+    console.log('🔍 Geocoding address:', addressString);
+    
+    const results = await geocoder.geocode(addressString);
+    
+    if (results && results.length > 0) {
+      const lat = results[0].latitude;
+      const lng = results[0].longitude;
+      
+      console.log('✅ Geocoded successfully:', { lat, lng });
+      
+      return {
+        coordinates: [lng, lat], // GeoJSON: [longitude, latitude]
+        latitude: lat,
+        longitude: lng,
+        location: {
+          type: 'Point',
+          coordinates: [lng, lat]
+        }
+      };
+    } else {
+      console.log('⚠️ No geocoding results found');
+      return { coordinates: [0, 0], latitude: 0, longitude: 0 };
+    }
+  } catch (error) {
+    console.error('❌ Geocoding error:', error.message);
+    return { coordinates: [0, 0], latitude: 0, longitude: 0 };
+  }
+}
+
+// ==========================================
+// CREATE NEW ORDER - WITH GEOCODING
+// ==========================================
+router.post('/', auth, async (req, res) => {
+  try {
+    console.log('\n========== 📦 CREATE ORDER ==========');
+    console.log('Customer ID:', req.user.id);
+    
+    const { 
+      restaurantId, 
+      items, 
+      deliveryAddress,
+      paymentMethod,
+      specialInstructions 
+    } = req.body;
+    
+    // Validate restaurant exists
+    const restaurant = await Restaurant.findById(restaurantId);
+    if (!restaurant) {
+      return res.status(404).json({
+        success: false,
+        message: 'Restaurant not found'
+      });
+    }
+    
+    // Calculate pricing
+    const subtotal = items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const deliveryFee = 25;
+    const tax = subtotal * 0.15; // 15% tax
+    const driverPayout = 20;
+    
+    console.log('💰 Order pricing:', {
+      subtotal,
+      deliveryFee,
+      tax,
+      total: subtotal + deliveryFee + tax
+    });
+    
+    // GEOCODE THE DELIVERY ADDRESS
+    console.log('🌍 Geocoding delivery address...');
+    const geoData = await geocodeAddress(deliveryAddress);
+    
+    console.log('📍 Geocoded coordinates:', geoData.coordinates);
+    
+    // Create order with geocoded coordinates
+    const order = new Order({
+      user: req.user.id,
+      restaurant: restaurantId,
+      items: items.map(item => ({
+        menuItem: item.menuItemId || item.menuItem,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity,
+        specialInstructions: item.specialInstructions || '',
+        subtotal: item.price * item.quantity
+      })),
+      deliveryAddress: {
+        street: deliveryAddress.street,
+        city: deliveryAddress.city,
+        state: deliveryAddress.state,
+        zipCode: deliveryAddress.zipCode,
+        country: deliveryAddress.country || 'South Africa',
+        coordinates: geoData.coordinates, // [lng, lat]
+        location: geoData.location,
+        instructions: deliveryAddress.instructions || '',
+        contactPhone: deliveryAddress.contactPhone || deliveryAddress.phone || req.user.phone
+      },
+      pricing: {
+        subtotal: subtotal,
+        deliveryFee: deliveryFee,
+        tax: tax,
+        driverPayout: driverPayout,
+        discount: 0
+      },
+      payment: {
+        method: paymentMethod || 'cash',
+        status: 'pending'
+      },
+      specialInstructions: specialInstructions || ''
+    });
+    
+    await order.save();
+    
+    console.log('✅ Order created:', {
+      orderId: order._id,
+      orderNumber: order.orderNumber,
+      coordinates: geoData.coordinates,
+      hasValidCoordinates: geoData.coordinates[0] !== 0 && geoData.coordinates[1] !== 0
+    });
+    console.log('====================================\n');
+    
+    // Populate before sending response
+    await order.populate('restaurant', 'name image coverImage displayName');
+    await order.populate('items.menuItem', 'name price image');
+    
+    res.status(201).json({
+      success: true,
+      message: 'Order created successfully',
+      order: order
+    });
+    
+  } catch (error) {
+    console.error('❌ Error creating order:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to create order',
+      error: error.message 
+    });
+  }
+});
 
 // ==========================================
 // GET CUSTOMER ORDERS - SIMPLIFIED PRICING

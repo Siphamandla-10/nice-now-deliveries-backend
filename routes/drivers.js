@@ -75,7 +75,7 @@ router.get('/available-orders', auth, isDriver, async (req, res) => {
       status: 'ready',
       driver: null
     })
-      .populate('restaurant', 'name address contact')
+      .populate('restaurant', 'name address contact location')
       .populate('user', 'name phone')
       .lean()
       .sort({ createdAt: -1 })
@@ -126,7 +126,7 @@ router.get('/active-deliveries', auth, isDriver, async (req, res) => {
       driver: req.user.id,
       status: { $in: ['driver_assigned', 'picked_up', 'on_the_way'] }
     })
-      .populate('restaurant', 'name address contact')
+      .populate('restaurant', 'name address contact location')
       .populate('user', 'name phone')
       .lean()
       .sort({ createdAt: -1 });
@@ -163,7 +163,6 @@ router.get('/active-deliveries', auth, isDriver, async (req, res) => {
 
 // ==========================================
 // GET ALL DELIVERIES FOR DRIVER (HISTORY)
-// ⭐ THIS IS THE NEW ROUTE THAT FIXES THE ERROR
 // ==========================================
 router.get('/deliveries', auth, isDriver, async (req, res) => {
   try {
@@ -173,7 +172,7 @@ router.get('/deliveries', auth, isDriver, async (req, res) => {
     const deliveries = await Order.find({
       driver: req.user.id
     })
-      .populate('restaurant', 'name address contact image')
+      .populate('restaurant', 'name address contact image location')
       .populate('user', 'name phone')
       .lean()
       .sort({ createdAt: -1 })
@@ -220,7 +219,7 @@ router.get('/completed-deliveries', auth, isDriver, async (req, res) => {
       driver: req.user.id,
       status: 'delivered'
     })
-      .populate('restaurant', 'name')
+      .populate('restaurant', 'name location')
       .populate('user', 'name')
       .lean()
       .sort({ 'timestamps.deliveredAt': -1 })
@@ -249,6 +248,184 @@ router.get('/completed-deliveries', auth, isDriver, async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: 'Failed to fetch completed deliveries' 
+    });
+  }
+});
+
+// ==========================================
+// UPDATE DRIVER LOCATION
+// ==========================================
+router.post('/deliveries/:orderId/location', auth, isDriver, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { latitude, longitude, heading } = req.body;
+    
+    console.log('\n========== 📍 UPDATE DRIVER LOCATION ==========');
+    console.log('Order ID:', orderId);
+    console.log('Driver ID:', req.user.id);
+    console.log('Location:', { latitude, longitude, heading });
+    
+    // Validate input
+    if (!latitude || !longitude) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Latitude and longitude are required' 
+      });
+    }
+    
+    // Find the order
+    const order = await Order.findById(orderId);
+    
+    if (!order) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Order not found' 
+      });
+    }
+    
+    // Verify driver owns this order
+    if (!order.driver || order.driver.toString() !== req.user.id) {
+      return res.status(403).json({ 
+        success: false, 
+        error: 'Unauthorized to update location for this order' 
+      });
+    }
+    
+    // Update driver location in Driver model
+    const driver = await Driver.findOne({ user: req.user.id });
+    
+    if (driver) {
+      driver.location.current.coordinates = [longitude, latitude];
+      driver.location.lastUpdated = new Date();
+      await driver.save();
+      console.log('✅ Driver location updated in Driver model');
+    }
+    
+    // Optionally store driver location in order for history
+    if (!order.driverLocationHistory) {
+      order.driverLocationHistory = [];
+    }
+    
+    order.driverLocationHistory.push({
+      coordinates: [longitude, latitude],
+      heading: heading || 0,
+      timestamp: new Date()
+    });
+    
+    // Keep only last 100 location points to avoid bloat
+    if (order.driverLocationHistory.length > 100) {
+      order.driverLocationHistory = order.driverLocationHistory.slice(-100);
+    }
+    
+    await order.save();
+    
+    console.log('✅ Location updated successfully');
+    console.log('=========================================\n');
+    
+    res.json({ 
+      success: true, 
+      message: 'Location updated successfully',
+      location: {
+        latitude,
+        longitude,
+        heading: heading || 0,
+        timestamp: new Date()
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error updating driver location:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to update location',
+      details: error.message 
+    });
+  }
+});
+
+// ==========================================
+// GET DELIVERY ROUTE INFO
+// ==========================================
+router.get('/deliveries/:orderId/route', auth, isDriver, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const { driverLat, driverLng } = req.query;
+    
+    console.log('\n========== 🗺️ GET DELIVERY ROUTE ==========');
+    console.log('Order ID:', orderId);
+    console.log('Driver Location:', driverLat, driverLng);
+    
+    const order = await Order.findById(orderId)
+      .populate('restaurant', 'name address location')
+      .populate('user', 'name phone')
+      .lean();
+    
+    if (!order) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Order not found' 
+      });
+    }
+    
+    // Verify driver owns this order or order is available
+    if (order.driver && order.driver.toString() !== req.user.id) {
+      return res.status(403).json({ 
+        success: false, 
+        error: 'Unauthorized to view this order route' 
+      });
+    }
+    
+    // Extract coordinates
+    const restaurantCoords = order.restaurant?.location?.coordinates;
+    const customerCoords = order.deliveryAddress?.coordinates;
+    
+    if (!restaurantCoords || !customerCoords) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing location coordinates' 
+      });
+    }
+    
+    const routeData = {
+      driver: driverLat && driverLng ? {
+        latitude: parseFloat(driverLat),
+        longitude: parseFloat(driverLng)
+      } : null,
+      restaurant: {
+        latitude: restaurantCoords[1],
+        longitude: restaurantCoords[0],
+        name: order.restaurant.name,
+        address: order.restaurant.address
+      },
+      customer: {
+        latitude: customerCoords[1],
+        longitude: customerCoords[0],
+        name: order.user?.name || 'Customer',
+        address: order.deliveryAddress?.street || order.deliveryAddress?.address,
+        phone: order.user?.phone || ''
+      },
+      order: {
+        id: order._id,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        items: order.items?.length || 0,
+        total: order.pricing?.total || order.total || 0,
+        driverEarnings: order.driverEarnings || order.pricing?.driverPayout || 20
+      }
+    };
+    
+    console.log('✅ Route data prepared');
+    console.log('=========================================\n');
+    
+    res.json({ 
+      success: true, 
+      route: routeData 
+    });
+  } catch (error) {
+    console.error('❌ Error getting delivery route:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get delivery route',
+      details: error.message 
     });
   }
 });
@@ -303,7 +480,7 @@ router.post('/deliveries/:orderId/accept', auth, isDriver, async (req, res) => {
     await order.save();
     
     const updatedOrder = await Order.findById(orderId)
-      .populate('restaurant', 'name address contact')
+      .populate('restaurant', 'name address contact location')
       .populate('user', 'name phone')
       .populate('driver', 'name phone')
       .lean();
@@ -428,7 +605,7 @@ router.patch('/deliveries/:orderId/status', auth, isDriver, async (req, res) => 
     await order.save();
     
     const updatedOrder = await Order.findById(orderId)
-      .populate('restaurant', 'name')
+      .populate('restaurant', 'name location')
       .populate('user', 'name phone')
       .populate('driver', 'name phone')
       .lean();
@@ -623,7 +800,7 @@ router.post('/toggle-availability', auth, isDriver, async (req, res) => {
 router.get('/:id', auth, isDriver, async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
-      .populate('restaurant', 'name address contact')
+      .populate('restaurant', 'name address contact location')
       .populate('user', 'name phone')
       .populate('driver', 'name phone')
       .lean();

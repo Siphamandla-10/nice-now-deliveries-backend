@@ -1,4 +1,4 @@
-// models/Order.js - COMPLETE FIX with driverEarnings field
+// models/Order.js - COMPLETE FIX with driverEarnings field + Location Tracking
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
@@ -75,6 +75,10 @@ const orderSchema = new mongoose.Schema({
     country: {
       type: String,
       default: 'South Africa'
+    },
+    coordinates: {
+      type: [Number], // [longitude, latitude]
+      default: [0, 0]
     },
     location: {
       type: {
@@ -176,6 +180,22 @@ const orderSchema = new mongoose.Schema({
     default: 0,
     min: 0
   },
+  
+  // Driver Location Tracking History
+  driverLocationHistory: [{
+    coordinates: {
+      type: [Number], // [longitude, latitude]
+      required: true
+    },
+    heading: {
+      type: Number,
+      default: 0
+    },
+    timestamp: {
+      type: Date,
+      default: Date.now
+    }
+  }],
   
   // Order Status
   status: {
@@ -471,6 +491,35 @@ orderSchema.methods.updateStatus = async function(newStatus) {
   return this.save();
 };
 
+// METHOD: Add driver location point
+orderSchema.methods.addDriverLocation = function(latitude, longitude, heading = 0) {
+  if (!this.driverLocationHistory) {
+    this.driverLocationHistory = [];
+  }
+  
+  this.driverLocationHistory.push({
+    coordinates: [longitude, latitude],
+    heading: heading,
+    timestamp: new Date()
+  });
+  
+  // Keep only last 100 location points to avoid bloat
+  if (this.driverLocationHistory.length > 100) {
+    this.driverLocationHistory = this.driverLocationHistory.slice(-100);
+  }
+  
+  return this;
+};
+
+// METHOD: Get latest driver location
+orderSchema.methods.getLatestDriverLocation = function() {
+  if (!this.driverLocationHistory || this.driverLocationHistory.length === 0) {
+    return null;
+  }
+  
+  return this.driverLocationHistory[this.driverLocationHistory.length - 1];
+};
+
 // METHOD: Assign driver
 orderSchema.methods.assignDriver = async function(driverId) {
   this.driver = driverId;
@@ -575,7 +624,7 @@ orderSchema.statics.findForDriver = function(driverId, status = null) {
   const query = { driver: driverId };
   if (status) query.status = status;
   return this.find(query)
-    .populate('restaurant', 'name address contact')
+    .populate('restaurant', 'name address contact location')
     .populate('user', 'name phone')
     .sort({ createdAt: -1 });
 };
