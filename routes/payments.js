@@ -1,24 +1,21 @@
-// backend/routes/payments.js - PAYFAST HOSTED PAYMENT PAGE (WITH REDIRECT)
+// backend/routes/payments.js - PAYSTACK PAYMENT INTEGRATION
 const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
+const axios = require('axios');
 const Payment = require('../models/Payment');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const { authMiddleware } = require('../middleware/auth');
 
-// Payfast Configuration
-const PAYFAST_CONFIG = {
-  merchantId: process.env.PAYFAST_MERCHANT_ID || '33561729',
-  merchantKey: process.env.PAYFAST_MERCHANT_KEY || 'xcafevj36gf1h',
-  passphrase: process.env.PAYFAST_PASSPHRASE || 'MySecurePass2024_',
-  sandbox: process.env.NODE_ENV !== 'production',
+// Paystack Configuration
+const PAYSTACK_CONFIG = {
+  secretKey: process.env.PAYSTACK_SECRET_KEY || 'sk_test_your_secret_key_here',
+  publicKey: process.env.PAYSTACK_PUBLIC_KEY || 'pk_test_your_public_key_here',
 };
 
-// Payfast URLs
-const PAYFAST_URL = PAYFAST_CONFIG.sandbox 
-  ? 'https://sandbox.payfast.co.za/eng/process'
-  : 'https://www.payfast.co.za/eng/process';
+// Paystack API URL
+const PAYSTACK_API_URL = 'https://api.paystack.co';
 
 // Your app URLs (update these with your actual URLs)
 const APP_URL = process.env.APP_URL || 'http://192.168.3.1:3000';
@@ -31,30 +28,19 @@ router.use((req, res, next) => {
   next();
 });
 
-// Helper function to generate Payfast signature
-function generateSignature(data, passphrase = null) {
-  let pfOutput = "";
-  for (let key in data) {
-    if (data.hasOwnProperty(key)) {
-      if (data[key] !== "") {
-        pfOutput += `${key}=${encodeURIComponent(data[key].toString().trim()).replace(/%20/g, "+")}&`;
-      }
-    }
-  }
-  
-  let getString = pfOutput.slice(0, -1);
-  
-  if (passphrase !== null) {
-    getString += `&passphrase=${encodeURIComponent(passphrase.trim()).replace(/%20/g, "+")}`;
-  }
-  
-  return crypto.createHash("md5").update(getString).digest("hex");
+// Helper function to verify Paystack signature
+function verifyPaystackSignature(payload, signature) {
+  const hash = crypto
+    .createHmac('sha512', PAYSTACK_CONFIG.secretKey)
+    .update(JSON.stringify(payload))
+    .digest('hex');
+  return hash === signature;
 }
 
-// POST /api/payments/create-payfast-payment - Create payment and get redirect URL
-router.post('/create-payfast-payment', authMiddleware, async (req, res) => {
+// POST /api/payments/create-paystack-payment - Initialize Paystack payment
+router.post('/create-paystack-payment', authMiddleware, async (req, res) => {
   try {
-    console.log('💳 POST /api/payments/create-payfast-payment');
+    console.log('💳 POST /api/payments/create-paystack-payment');
     console.log('User ID:', req.user.id);
 
     const { amount, orderData } = req.body;
@@ -75,20 +61,18 @@ router.post('/create-payfast-payment', authMiddleware, async (req, res) => {
       });
     }
 
-    // Generate unique payment ID
-    const paymentId = `PAY${Date.now()}${Math.random().toString(36).substr(2, 9)}`;
+    // Generate unique payment reference
+    const paymentReference = `PAY_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-    // Create pending order first (will be confirmed after payment)
+    // Generate order number
     const date = new Date();
     const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
     const randomNum = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
     const orderNumber = `ORD-${dateStr}-${randomNum}`;
 
-    const contactPhone = user?.phone || orderData.deliveryAddress?.contactPhone || '0000000000';
-
     // Store order data temporarily (we'll create the real order after payment confirmation)
     const tempOrderData = {
-      paymentId: paymentId,
+      paymentReference: paymentReference,
       userId: req.user.id,
       orderNumber: orderNumber,
       amount: amount,
@@ -98,139 +82,166 @@ router.post('/create-payfast-payment', authMiddleware, async (req, res) => {
 
     // Store in memory or database (for production, use Redis or database)
     global.pendingPayments = global.pendingPayments || {};
-    global.pendingPayments[paymentId] = tempOrderData;
+    global.pendingPayments[paymentReference] = tempOrderData;
 
-    console.log('📝 Pending payment created:', paymentId);
+    console.log('📝 Pending payment created:', paymentReference);
 
-    // Prepare Payfast payment data
-    const payfastData = {
-      // Merchant details
-      merchant_id: PAYFAST_CONFIG.merchantId,
-      merchant_key: PAYFAST_CONFIG.merchantKey,
-      
-      // Buyer details
-      name_first: user.name?.split(' ')[0] || 'Customer',
-      name_last: user.name?.split(' ').slice(1).join(' ') || '',
-      email_address: user.email,
-      cell_number: contactPhone,
-      
-      // Transaction details
-      m_payment_id: paymentId,
-      amount: amount.toFixed(2),
-      item_name: `Order from ${orderData.restaurantName}`,
-      item_description: `${orderData.items.length} items from ${orderData.restaurantName}`,
-      
-      // URLs - These handle the redirect flow
-      return_url: `${API_URL}/api/payments/payfast-return`,
-      cancel_url: `${API_URL}/api/payments/payfast-cancel`,
-      notify_url: `${API_URL}/api/payments/payfast-notify`,
-      
-      // Custom fields (to identify the order later)
-      custom_str1: req.user.id,
-      custom_str2: orderData.restaurantId,
-      custom_str3: paymentId,
+    // Initialize Paystack transaction
+    const paystackData = {
+      email: user.email,
+      amount: Math.round(amount * 100), // Paystack expects amount in kobo (cents)
+      currency: 'ZAR',
+      reference: paymentReference,
+      callback_url: `${API_URL}/api/payments/paystack-callback`,
+      metadata: {
+        user_id: req.user.id,
+        restaurant_id: orderData.restaurantId,
+        order_number: orderNumber,
+        custom_fields: [
+          {
+            display_name: 'Restaurant',
+            variable_name: 'restaurant_name',
+            value: orderData.restaurantName
+          },
+          {
+            display_name: 'Items',
+            variable_name: 'items_count',
+            value: orderData.items.length.toString()
+          }
+        ]
+      }
     };
 
-    // Generate signature
-    const signature = generateSignature(payfastData, PAYFAST_CONFIG.passphrase);
-    payfastData.signature = signature;
+    console.log('📤 Initializing Paystack transaction...');
 
-    console.log('✅ Payfast payment data prepared');
-    console.log('📍 Redirect URL:', PAYFAST_URL);
+    // Call Paystack API to initialize transaction
+    const response = await axios.post(
+      `${PAYSTACK_API_URL}/transaction/initialize`,
+      paystackData,
+      {
+        headers: {
+          Authorization: `Bearer ${PAYSTACK_CONFIG.secretKey}`,
+          'Content-Type': 'application/json',
+        }
+      }
+    );
 
-    // Return the payment URL and data to frontend
-    res.json({
-      success: true,
-      paymentId: paymentId,
-      orderNumber: orderNumber,
-      payfastUrl: PAYFAST_URL,
-      payfastData: payfastData,
-      message: 'Redirect to Payfast to complete payment'
-    });
+    if (response.data.status && response.data.data) {
+      const { authorization_url, access_code, reference } = response.data.data;
+
+      console.log('✅ Paystack transaction initialized');
+      console.log('📍 Authorization URL:', authorization_url);
+
+      // Return the payment URL to frontend
+      res.json({
+        success: true,
+        paymentReference: reference,
+        orderNumber: orderNumber,
+        authorizationUrl: authorization_url,
+        accessCode: access_code,
+        message: 'Redirect to Paystack to complete payment'
+      });
+    } else {
+      throw new Error('Failed to initialize Paystack transaction');
+    }
 
   } catch (error) {
-    console.error('❌ Error creating Payfast payment:', error);
+    console.error('❌ Error creating Paystack payment:', error.response?.data || error.message);
     res.status(500).json({
       success: false,
       message: 'Failed to create payment',
-      error: error.message
+      error: error.response?.data?.message || error.message
     });
   }
 });
 
-// GET /api/payments/payfast-return - Handle successful payment return
-router.get('/payfast-return', async (req, res) => {
+// GET /api/payments/paystack-callback - Handle payment callback from Paystack
+router.get('/paystack-callback', async (req, res) => {
   try {
-    console.log('✅ Payfast return - Payment successful');
-    console.log('Query params:', req.query);
+    const { reference, trxref } = req.query;
+    const paymentReference = reference || trxref;
 
-    // Redirect to app with success
-    res.redirect(`${APP_URL}/payment-success?status=success`);
+    console.log('✅ Paystack callback received');
+    console.log('📋 Reference:', paymentReference);
+
+    if (!paymentReference) {
+      return res.redirect(`${APP_URL}/payment-error?error=missing_reference`);
+    }
+
+    // Verify the transaction with Paystack
+    const verifyResponse = await axios.get(
+      `${PAYSTACK_API_URL}/transaction/verify/${paymentReference}`,
+      {
+        headers: {
+          Authorization: `Bearer ${PAYSTACK_CONFIG.secretKey}`,
+        }
+      }
+    );
+
+    const { status, data } = verifyResponse.data;
+
+    if (status && data.status === 'success') {
+      console.log('✅ Payment verified successfully');
+      
+      // Process the order (this will be done in webhook too, but we redirect user immediately)
+      res.redirect(`${APP_URL}/payment-success?reference=${paymentReference}`);
+    } else {
+      console.log('❌ Payment verification failed');
+      res.redirect(`${APP_URL}/payment-failed?reference=${paymentReference}`);
+    }
 
   } catch (error) {
-    console.error('❌ Error handling return:', error);
-    res.redirect(`${APP_URL}/payment-success?status=error`);
+    console.error('❌ Error handling callback:', error.response?.data || error.message);
+    res.redirect(`${APP_URL}/payment-error?error=verification_failed`);
   }
 });
 
-// GET /api/payments/payfast-cancel - Handle cancelled payment
-router.get('/payfast-cancel', async (req, res) => {
+// POST /api/payments/paystack-webhook - Paystack Webhook for payment notifications
+router.post('/paystack-webhook', express.json(), async (req, res) => {
   try {
-    console.log('❌ Payfast cancel - Payment cancelled');
-    console.log('Query params:', req.query);
+    console.log('📨 Paystack webhook received');
 
-    // Redirect to app with cancel
-    res.redirect(`${APP_URL}/payment-cancelled?status=cancelled`);
-
-  } catch (error) {
-    console.error('❌ Error handling cancel:', error);
-    res.redirect(`${APP_URL}/payment-cancelled?status=error`);
-  }
-});
-
-// POST /api/payments/payfast-notify - Payfast ITN (Instant Transaction Notification)
-router.post('/payfast-notify', express.urlencoded({ extended: true }), async (req, res) => {
-  try {
-    console.log('📨 Payfast ITN received:', req.body);
-
-    const payfastData = req.body;
-
-    // Verify signature
-    const signature = payfastData.signature;
-    delete payfastData.signature;
+    // Verify webhook signature
+    const signature = req.headers['x-paystack-signature'];
     
-    const calculatedSignature = generateSignature(payfastData, PAYFAST_CONFIG.passphrase);
+    if (!signature) {
+      console.error('❌ No signature found');
+      return res.status(400).send('No signature');
+    }
+
+    const isValid = verifyPaystackSignature(req.body, signature);
     
-    if (signature !== calculatedSignature) {
+    if (!isValid) {
       console.error('❌ Invalid signature');
       return res.status(400).send('Invalid signature');
     }
 
     console.log('✅ Signature verified');
 
-    // Get payment details
-    const paymentId = payfastData.m_payment_id;
-    const paymentStatus = payfastData.payment_status;
-    const customStr1 = payfastData.custom_str1; // userId
-    const customStr2 = payfastData.custom_str2; // restaurantId
-    const customStr3 = payfastData.custom_str3; // paymentId
+    const event = req.body;
+    const eventType = event.event;
 
-    console.log('💳 Payment ID:', paymentId);
-    console.log('📊 Payment Status:', paymentStatus);
+    console.log('📊 Event type:', eventType);
 
-    if (paymentStatus === 'COMPLETE') {
-      console.log('✅ Payment successful - Creating order...');
+    // Handle charge.success event
+    if (eventType === 'charge.success') {
+      const { reference, amount, customer, metadata, paid_at, channel } = event.data;
+
+      console.log('💳 Payment successful');
+      console.log('📋 Reference:', reference);
+      console.log('💰 Amount:', amount / 100); // Convert from kobo to rands
 
       // Get pending order data
       global.pendingPayments = global.pendingPayments || {};
-      const pendingOrder = global.pendingPayments[paymentId];
+      const pendingOrder = global.pendingPayments[reference];
 
       if (!pendingOrder) {
-        console.error('❌ Pending order not found for payment:', paymentId);
+        console.error('❌ Pending order not found for reference:', reference);
         return res.status(404).send('Order not found');
       }
 
-      const { userId, orderNumber, amount, orderData } = pendingOrder;
+      const { userId, orderNumber, orderData } = pendingOrder;
+      const finalAmount = amount / 100; // Convert from kobo to rands
 
       // Get user data
       const userData = await User.findById(userId);
@@ -247,7 +258,7 @@ router.post('/payfast-notify', express.urlencoded({ extended: true }), async (re
           name: item.name,
           price: item.price,
           quantity: item.quantity,
-          specialInstructions: '',
+          specialInstructions: item.specialInstructions || '',
           subtotal: item.price * item.quantity
         })),
         
@@ -259,9 +270,12 @@ router.post('/payfast-notify', express.urlencoded({ extended: true }), async (re
           country: orderData.deliveryAddress?.country || 'South Africa',
           location: {
             type: 'Point',
-            coordinates: [0, 0]
+            coordinates: [
+              orderData.deliveryAddress?.coordinates?.[0] || 0,
+              orderData.deliveryAddress?.coordinates?.[1] || 0
+            ]
           },
-          instructions: '',
+          instructions: orderData.deliveryAddress?.instructions || '',
           contactPhone: contactPhone
         },
         
@@ -270,7 +284,7 @@ router.post('/payfast-notify', express.urlencoded({ extended: true }), async (re
           deliveryFee: orderData.deliveryFee || 25,
           serviceFee: orderData.serviceFee || 5,
           discount: 0,
-          total: orderData.total || amount,
+          total: orderData.total || finalAmount,
           platformCommissionRate: 20,
           platformCommission: 0,
           restaurantPayout: 0,
@@ -285,8 +299,8 @@ router.post('/payfast-notify', express.urlencoded({ extended: true }), async (re
         payment: {
           method: 'card',
           status: 'paid',
-          transactionId: payfastData.pf_payment_id || paymentId,
-          paidAt: new Date()
+          transactionId: reference,
+          paidAt: new Date(paid_at)
         },
         
         status: 'confirmed',
@@ -314,45 +328,97 @@ router.post('/payfast-notify', express.urlencoded({ extended: true }), async (re
           subtotal: order.pricing.subtotal,
           deliveryFee: order.pricing.deliveryFee || 0,
           tax: order.pricing.tax || 0,
-          total: amount || order.pricing.total,
+          total: finalAmount,
           platformFee: 0,
-          vendorAmount: amount || order.pricing.total
+          vendorAmount: finalAmount
         },
         currency: 'ZAR',
         paymentMethod: {
           type: 'card',
-          last4: payfastData.billing_card_number?.slice(-4) || '0000',
-          brand: 'payfast',
+          last4: customer.authorization?.last4 || '0000',
+          brand: channel || 'card',
         },
         status: 'succeeded',
-        stripePaymentIntentId: payfastData.pf_payment_id || paymentId,
+        stripePaymentIntentId: reference,
         paymentTimestamps: {
           initiated: pendingOrder.createdAt,
-          confirmed: new Date()
+          confirmed: new Date(paid_at)
         },
         analytics: {
           userAgent: req.headers['user-agent'] || 'unknown',
-          ipAddress: req.ip || req.connection.remoteAddress,
+          ipAddress: customer.ip_address || req.ip || 'unknown',
           paymentSource: 'mobile_app'
         }
       };
 
-      const payment = await Payment.create(paymentData);
-      console.log('✅ Payment record created:', payment._id);
+      const paymentRecord = await Payment.create(paymentData);
+      console.log('✅ Payment record created:', paymentRecord._id);
 
       // Clean up pending payment
-      delete global.pendingPayments[paymentId];
+      delete global.pendingPayments[reference];
 
       console.log('🎉 Order and payment successfully created!');
-    } else {
-      console.log('❌ Payment failed or cancelled');
     }
 
     res.status(200).send('OK');
 
   } catch (error) {
-    console.error('❌ ITN processing error:', error);
+    console.error('❌ Webhook processing error:', error);
     res.status(500).send('Error');
+  }
+});
+
+// POST /api/payments/verify-payment - Manually verify a Paystack payment
+router.post('/verify-payment', authMiddleware, async (req, res) => {
+  try {
+    const { reference } = req.body;
+
+    if (!reference) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment reference is required'
+      });
+    }
+
+    console.log('🔍 Verifying payment:', reference);
+
+    // Verify with Paystack
+    const response = await axios.get(
+      `${PAYSTACK_API_URL}/transaction/verify/${reference}`,
+      {
+        headers: {
+          Authorization: `Bearer ${PAYSTACK_CONFIG.secretKey}`,
+        }
+      }
+    );
+
+    const { status, data } = response.data;
+
+    if (status && data) {
+      res.json({
+        success: true,
+        payment: {
+          reference: data.reference,
+          amount: data.amount / 100,
+          status: data.status,
+          paidAt: data.paid_at,
+          channel: data.channel,
+        }
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: 'Payment verification failed'
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Verification error:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to verify payment',
+      error: error.response?.data?.message || error.message
+    });
   }
 });
 
@@ -372,7 +438,7 @@ router.post('/process', authMiddleware, async (req, res) => {
     if (paymentMethod !== 'cash') {
       return res.status(400).json({
         success: false,
-        message: 'Please use create-payfast-payment endpoint for card payments'
+        message: 'Please use create-paystack-payment endpoint for card payments'
       });
     }
 
@@ -396,7 +462,7 @@ router.post('/process', authMiddleware, async (req, res) => {
         name: item.name,
         price: item.price,
         quantity: item.quantity,
-        specialInstructions: '',
+        specialInstructions: item.specialInstructions || '',
         subtotal: item.price * item.quantity
       })),
       
@@ -410,7 +476,7 @@ router.post('/process', authMiddleware, async (req, res) => {
           type: 'Point',
           coordinates: [0, 0]
         },
-        instructions: '',
+        instructions: orderData.deliveryAddress?.instructions || '',
         contactPhone: contactPhone
       },
       
